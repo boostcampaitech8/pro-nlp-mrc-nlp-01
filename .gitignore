@@ -1,0 +1,9 @@
+# Data folders
+data/
+
+# Code folder
+code/
+
+# Virtual environment
+.venv/
+
