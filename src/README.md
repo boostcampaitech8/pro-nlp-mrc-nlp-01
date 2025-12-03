@@ -103,3 +103,4 @@ python -m src.inference.inference \
 - `basecode/` 폴더는 참고용 베이스 코드입니다.
 - 실제 작업은 이 `src/` 폴더에서 진행합니다.
 - `scripts/` 폴더에 실행 스크립트가 있습니다.
+ 
