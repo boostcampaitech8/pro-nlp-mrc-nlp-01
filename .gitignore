@@ -4,6 +4,7 @@ data/
 # Code folder
 code/
 basecode/
+baseline/
 
 # Source code (keep src/ but ignore cache and outputs)
 src/__pycache__/
