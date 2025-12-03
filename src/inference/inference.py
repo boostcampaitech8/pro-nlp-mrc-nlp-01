@@ -14,7 +14,7 @@ from datasets import (
     Value,
     load_from_disk,
 )
-from ..data import SparseRetrieval
+from ..retrieval import SparseRetrieval
 from ..training import QuestionAnsweringTrainer
 from transformers import (
     AutoConfig,

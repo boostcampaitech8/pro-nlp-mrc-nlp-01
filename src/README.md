@@ -9,7 +9,7 @@ src/
 ├── config/              # 설정 관련
 │   ├── __init__.py
 │   └── arguments.py     # 모델 및 데이터 학습 인자 정의
-├── data/                # 데이터 처리 관련
+├── retrieval/           # 검색/리트리벌 관련
 │   ├── __init__.py
 │   └── retrieval.py     # Sparse Retrieval 구현 (TF-IDF 기반)
 ├── training/            # 학습 관련
@@ -83,7 +83,7 @@ python -m src.inference.inference \
 - `ModelArguments`: 모델 관련 인자 (모델 경로, config, tokenizer 등)
 - `DataTrainingArguments`: 데이터 및 학습 관련 인자
 
-### data
+### retrieval
 - `SparseRetrieval`: TF-IDF 기반 Sparse Retrieval 클래스
 
 ### training

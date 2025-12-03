@@ -8,7 +8,7 @@ P stage 3 대회를 위한 Open-Domain Question Answering 프로젝트입니다.
 .
 ├── src/                 # 소스 코드 (실제 작업 코드)
 │   ├── config/          # 설정 관련
-│   ├── data/            # 데이터 처리
+│   ├── retrieval/       # 검색/리트리벌
 │   ├── training/        # 학습 관련
 │   ├── inference/       # 추론 관련
 │   └── utils/           # 유틸리티
@@ -100,7 +100,7 @@ python -m src.inference.inference \
 - `ModelArguments`: 모델 관련 인자
 - `DataTrainingArguments`: 데이터 및 학습 관련 인자
 
-### src/data
+### src/retrieval
 - `SparseRetrieval`: TF-IDF 기반 Sparse Retrieval
 
 ### src/training
