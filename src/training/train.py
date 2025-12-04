@@ -302,7 +302,7 @@ def run_mrc(
         #     resume_checkpoint = model_args.model_name_or_path
         
         training_results = qa_trainer.train(resume_from_checkpoint=resume_checkpoint)
-        qa_trainer.save_model()
+        # qa_trainer.save_model()
 
         train_metrics = training_results.metrics
         train_metrics["train_samples"] = len(processed_train_data)
