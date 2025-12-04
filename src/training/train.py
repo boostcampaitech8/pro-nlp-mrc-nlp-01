@@ -329,6 +329,8 @@ def run_mrc(
 
         eval_metrics["eval_samples"] = len(processed_val_data)
 
+        # wandb에 로깅하기 위해 log() 메서드 사용
+        qa_trainer.log(eval_metrics)
         qa_trainer.log_metrics("eval", eval_metrics)
         qa_trainer.save_metrics("eval", eval_metrics)
 
