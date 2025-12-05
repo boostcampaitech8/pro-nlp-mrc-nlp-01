@@ -2,7 +2,7 @@
 
 Open-Domain Question Answering (ODQA) 프로젝트의 실제 작업용 소스 코드입니다.
 
-## 폴더 구조
+##  폴더 구조
 
 ```
 src/
