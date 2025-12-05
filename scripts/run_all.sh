@@ -1,16 +1,13 @@
 #!/bin/bash
 
 models=(
-    "monologg/kobigbird-bert-base"
-    "lighthouse/mdeberta-v3-base-kor-further"
-    "DHBaek/xlm-roberta-large-korquad-mask"
+    "microsoft/deberta-v3-large"
 )
 
 dataset_path="data/train_dataset"
 
 for m in "${models[@]}"; do
     safe_name="${m//\//_}"
-    out_dir="temp_runs/$safe_name"   # 🔥 모델별 독립적인 임시 폴더
 
     echo "======================================"
     echo " 🚀 Start Training: $m"
