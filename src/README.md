@@ -42,7 +42,7 @@ python -m src.training.train \
   --do_eval
 ```
 
-#### 방법 2: 스크립트 사용
+#### 방법 2: 스크립트 사용   
 ```bash
 # 프로젝트 루트에서 실행
 ./scripts/train.sh \

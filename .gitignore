@@ -70,3 +70,11 @@ src/wandb/
 *.temp
 *.bak
 
+# AI tools configuration
+.gemini/
+.agent/
+.cursor/
+
+# Binary embedding files
+*.bin
+
