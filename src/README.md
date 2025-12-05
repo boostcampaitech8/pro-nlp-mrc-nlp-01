@@ -66,7 +66,6 @@ python -m src.training.train \
 ```
 
 ### 추론
-
 **주의**: 프로젝트 루트에서 실행하세요. 
 
 #### 방법 1: Python 모듈로 실행
