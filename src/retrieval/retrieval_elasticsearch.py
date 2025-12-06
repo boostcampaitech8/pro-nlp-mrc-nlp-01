@@ -207,14 +207,28 @@ class ElasticSearchRetrieval:
         self.ids = list(range(len(self.contexts)))
 
         # 2) ES 클라이언트
-        self.es = Elasticsearch(es_host)
+        self.es = Elasticsearch(
+            es_host,
+            headers={
+                "accept": "application/vnd.elasticsearch+json; compatible-with=8",
+                "content-type": "application/vnd.elasticsearch+json; compatible-with=8",
+            } 
+            )
 
     def build_elasticsearch_index(self, recreate: bool = False, batch_size: int = 500):
         """
         위키 문서들을 ES 인덱스에 넣는 함수.
         - recreate=True 이면 기존 인덱스 삭제 후 다시 생성
         """
-
+        print("[DEBUG] index_name:", repr(self.index_name))
+        ### debug #####
+        # 혹시 ES 서버 정보도 확인해보고 싶으면 (에러 나면 주석 처리)
+        try:
+            info = self.es.info()
+            print("[DEBUG] ES info:", info)
+        except Exception as e:
+            print("[DEBUG] ES info error:", e)
+        #############################
         # 인덱스 존재 여부 확인
         index_exists = self.es.indices.exists(index=self.index_name)
 

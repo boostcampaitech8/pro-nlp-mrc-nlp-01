@@ -22,6 +22,12 @@ class ModelArguments:
             "help": "Pretrained tokenizer name or path if not the same as model_name"
         },
     )
+    retriever_name_or_path: Optional[str] = field(
+        default="outputs/dpr_test",
+        metadata={
+            "help": "Path to pretrained retriever model or model identifier from huggingface.co/models"
+        },
+    )
 
 @dataclass
 class DataTrainingArguments:

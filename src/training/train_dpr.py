@@ -71,14 +71,28 @@ class BiEncoder(nn.Module):
         q_outputs = self.question_encoder(q_input_ids, q_attention_mask, q_token_type_ids)
         c_outputs = self.context_encoder(c_input_ids, c_attention_mask, c_token_type_ids)  # (batch_size, embed_dim)
 
-        # In-batch Negative Sampling
-        # (batch_size, batch_size) - 대각선이 Positive, 나머지가 In-batch Negatives
-        sim_scores = torch.matmul(q_outputs, c_outputs.transpose(0, 1))
+        # sim_scores: (batch_size, batch_size) if 1-1 mapping
+        # If we have hard negatives, c_outputs might be larger than q_outputs.
+        # Assuming c_outputs has (batch_size * (1 + num_negatives)) embeddings
+        
+        sim_scores = torch.matmul(q_outputs, c_outputs.transpose(0, 1)) # (batch_size, num_contexts)
 
-        # Labels: 대각선 인덱스 (0, 1, 2, ..., batch_size-1)
+        # Labels
+        # If we have [P1, N1, P2, N2, ...], the targets for Q1, Q2, .. are 0, 2, ...
+        # If we just have [P1, P2, ...], targets are 0, 1, ...
+        
         batch_size = q_outputs.shape[0]
+        num_contexts = c_outputs.shape[0]
+        
         if labels is None:
-            target = torch.arange(batch_size, device=sim_scores.device)
+            if num_contexts == batch_size:
+                target = torch.arange(batch_size, device=sim_scores.device)
+            else:
+                # Assuming 1 positive per question and rest are hard negatives interleaving or appended?
+                # The DataCollator below interleaves: [P1, HN1, P2, HN2, ...]
+                # So target indices are 0, 2, 4, ... (stride = num_contexts // batch_size)
+                stride = num_contexts // batch_size
+                target = torch.arange(0, num_contexts, step=stride, device=sim_scores.device)
         else:
             target = labels
             
@@ -95,7 +109,11 @@ class DPRDataCollator:
 
     def __call__(self, features):
         questions = [f["question"] for f in features]
-        contexts = [f["context"] for f in features]
+        contexts = []
+        for f in features:
+            contexts.append(f["context"])
+            if "hard_negative_context" in f:
+                contexts.append(f["hard_negative_context"])
 
         # Question Tokenization
         q_batch = self.tokenizer(
@@ -163,15 +181,18 @@ def main():
 
     # Prepare Dataset (Raw Text -> Collator handles tokenization)
     def prepare_features(example):
-        return {
+        features = {
             "question": example["question"],
-            "context": example["context"]  # Positive Context (In-batch negative will be used)
-            # Future Improvement: Add Hard Negatives here
+            "context": example["context"]
         }
+        if "hard_negative_context" in example:
+            features["hard_negative_context"] = example["hard_negative_context"]
+        return features
 
     train_dataset = train_dataset.map(
         prepare_features,
-        remove_columns=train_dataset.column_names
+        remove_columns=train_dataset.column_names,
+        load_from_cache_file=False
     )
     print(f"Processed train dataset size: {len(train_dataset)}")
     if len(train_dataset) > 0:

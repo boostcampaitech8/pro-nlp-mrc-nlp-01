@@ -39,6 +39,11 @@ class DenseRetrieval:
         self.data_path = data_path
         self.args = args
         self.dataset = dataset
+        self.model_name_or_path = model_name_or_path
+        
+        # Generate unique cache name based on model path
+        model_hash = model_name_or_path.replace("/", "_").replace("\\", "_")
+        self.cache_prefix = f"dpr_{model_hash}"
         
         # Load Wikipedia Contexts
         with open(os.path.join(data_path, context_path), "r", encoding="utf-8") as f:
@@ -66,50 +71,65 @@ class DenseRetrieval:
 
         self.p_embedding = None
         self.indexer = None
+        self.retrieval_metrics = {}
 
     def get_dense_embedding(self) -> NoReturn:
-        pickle_name = f"dense_embedding.bin"
+        pickle_name = f"{self.cache_prefix}_embedding.bin"
         emd_path = os.path.join(self.data_path, pickle_name)
 
         if os.path.isfile(emd_path):
             with open(emd_path, "rb") as f:
                 self.p_embedding = pickle.load(f)
-            print("Dense embedding pickle loaded.")
+            print(f"Dense embedding loaded from {pickle_name}")
         else:
             print("Build passage embedding")
             self.c_encoder.eval()
             
             p_embs = []
-            batch_size = 128  # Increased from 16 for faster speed (32GB VRAM)
+            batch_size = 128  # Start with large batch size
             
             with torch.no_grad():
-                for i in tqdm(range(0, len(self.contexts), batch_size), desc="Encoding passages"):
-                    batch_contexts = self.contexts[i : i + batch_size]
-                    inputs = self.tokenizer(
-                        batch_contexts, 
-                        padding=True, 
-                        truncation=True, 
-                        max_length=512, 
-                        return_tensors="pt"
-                    ).to("cuda")
-                    
-                    emb = self.c_encoder(inputs["input_ids"], inputs["attention_mask"])
-                    p_embs.append(emb.cpu().numpy())
+                with torch.cuda.amp.autocast():
+                    i = 0
+                    pbar = tqdm(total=len(self.contexts), desc="Encoding passages")
+                    while i < len(self.contexts):
+                        batch_contexts = self.contexts[i : i + batch_size]
+                        try:
+                            inputs = self.tokenizer(
+                                batch_contexts, 
+                                padding=True, 
+                                truncation=True, 
+                                max_length=512, 
+                                return_tensors="pt"
+                            ).to("cuda")
+                            
+                            emb = self.c_encoder(inputs["input_ids"], inputs["attention_mask"])
+                            p_embs.append(emb.float().cpu().numpy())
+                            i += batch_size
+                            pbar.update(len(batch_contexts))
+                        except RuntimeError as e:
+                            if "out of memory" in str(e).lower():
+                                torch.cuda.empty_cache()
+                                batch_size = max(8, batch_size // 2)
+                                print(f"\n[WARNING] GPU OOM! Reducing batch size to {batch_size}")
+                            else:
+                                raise e
+                    pbar.close()
             
             self.p_embedding = np.concatenate(p_embs, axis=0)
             print(self.p_embedding.shape)
             
             with open(emd_path, "wb") as f:
                 pickle.dump(self.p_embedding, f)
-            print("Dense embedding pickle saved.")
+            print(f"Dense embedding saved to {pickle_name}")
 
     def build_faiss(self, num_clusters=64) -> NoReturn:
-        # Save index with a unique name based on clusters or type
-        indexer_name = f"faiss_dense_clusters{num_clusters}.index"
+        # Save index with a unique name based on model and clusters
+        indexer_name = f"{self.cache_prefix}_faiss_clusters{num_clusters}.index"
         indexer_path = os.path.join(self.data_path, indexer_name)
         
         if os.path.isfile(indexer_path):
-            print("Load Saved Faiss Indexer.")
+            print(f"Faiss indexer loaded from {indexer_name}")
             self.indexer = faiss.read_index(indexer_path)
         else:
             p_emb = self.p_embedding.astype(np.float32)
@@ -122,7 +142,7 @@ class DenseRetrieval:
             self.indexer.add(p_emb)
             
             faiss.write_index(self.indexer, indexer_path)
-            print("Faiss Indexer Saved.")
+            print(f"Faiss indexer saved to {indexer_name}")
 
     def retrieve(
         self, query_or_dataset: Union[str, Dataset], topk: Optional[int] = 100
@@ -152,22 +172,78 @@ class DenseRetrieval:
                     queries, k=topk
                 )
 
+            correct_count = 0
+            mrr_sum = 0.0
+            has_ground_truth = False
+            
+            # Check if ground truth exists in the first example
+            if "context" in query_or_dataset[0] and "answers" in query_or_dataset[0]:
+                has_ground_truth = True
+
+
             for idx, example in enumerate(
                 tqdm(query_or_dataset, desc="Dense retrieval: ")
             ):
+                # Retrieve top-k contexts
+                retrieved_contexts_list = [self.contexts[pid] for pid in doc_indices[idx]]
+                
                 tmp = {
                     "question": example["question"],
                     "id": example["id"],
-                    "context": " ".join(
-                        [self.contexts[pid] for pid in doc_indices[idx]]
-                    ),
+                    "context": " ".join(retrieved_contexts_list),
                 }
-                if "context" in example.keys() and "answers" in example.keys():
-                    tmp["original_context"] = example["context"]
+                
+                if has_ground_truth:
+                    original_context = example["context"]
+                    tmp["original_context"] = original_context
                     tmp["answers"] = example["answers"]
+                    
+                    # Containment Check (Accuracy)
+                    is_correct = any(
+                        original_context in rc or rc in original_context 
+                        for rc in retrieved_contexts_list
+                    )
+                    if is_correct:
+                        correct_count += 1
+                        
+                    # MRR Calculation
+                    rank = 0
+                    for i, rc in enumerate(retrieved_contexts_list):
+                        if original_context in rc or rc in original_context:
+                            rank = i + 1
+                            break
+                    if rank > 0:
+                        mrr_sum += 1.0 / rank
+
                 total.append(tmp)
 
             cqas = pd.DataFrame(total)
+            
+            # Calculate and store retrieval metrics
+            if has_ground_truth:
+                retrieval_accuracy = correct_count / len(query_or_dataset)
+                mrr = mrr_sum / len(query_or_dataset)
+                
+                self.retrieval_metrics = {
+                    "retrieval_accuracy": retrieval_accuracy,
+                    "mrr": mrr,
+                    "correct_count": correct_count,
+                    "total_count": len(query_or_dataset),
+                    "top_k": topk,
+                }
+                print(f"\n{'='*50}")
+                print(f"Retrieval Accuracy @ {topk}: {retrieval_accuracy:.4f} ({correct_count}/{len(query_or_dataset)})")
+                print(f"MRR @ {topk}: {mrr:.4f}")
+                print(f"{'='*50}\n")
+            else:
+                self.retrieval_metrics = {
+                    "top_k": topk,
+                    "total_count": len(query_or_dataset),
+                    "retrieval_accuracy": None,
+                    "mrr": None,
+                }
+                print(f"\n[INFO] Ground truth not available - retrieval accuracy and MRR cannot be calculated")
+
             return cqas
 
     def get_relevant_doc(self, query: str, k: Optional[int] = 1) -> Tuple[List, List]:
@@ -185,6 +261,9 @@ class DenseRetrieval:
 
         D, I = self.indexer.search(q_emb, k)
         return D.tolist()[0], I.tolist()[0]
+    
+    def get_retrieval_metrics(self) -> dict:
+        return self.retrieval_metrics
 
     def get_relevant_doc_bulk(self, queries: List, k: Optional[int] = 1) -> Tuple[List, List]:
         self.q_encoder.eval()
@@ -192,17 +271,18 @@ class DenseRetrieval:
         batch_size = 128
         
         with torch.no_grad():
-            for i in tqdm(range(0, len(queries), batch_size), desc="Encoding queries"):
-                batch_queries = queries[i : i + batch_size]
-                inputs = self.tokenizer(
-                    batch_queries, 
-                    padding=True, 
-                    truncation=True, 
-                    max_length=512, 
-                    return_tensors="pt"
-                ).to("cuda")
-                emb = self.q_encoder(inputs["input_ids"], inputs["attention_mask"])
-                q_embs.append(emb.cpu().numpy())
+            with torch.cuda.amp.autocast():
+                for i in tqdm(range(0, len(queries), batch_size), desc="Encoding queries"):
+                    batch_queries = queries[i : i + batch_size]
+                    inputs = self.tokenizer(
+                        batch_queries, 
+                        padding=True, 
+                        truncation=True, 
+                        max_length=512, 
+                        return_tensors="pt"
+                    ).to("cuda")
+                    emb = self.q_encoder(inputs["input_ids"], inputs["attention_mask"])
+                    q_embs.append(emb.float().cpu().numpy())
         
         q_embs = np.concatenate(q_embs, axis=0).astype(np.float32)
         D, I = self.indexer.search(q_embs, k)
@@ -211,7 +291,7 @@ class DenseRetrieval:
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="")
-    parser.add_argument("--dataset_name", metavar="./data/train_dataset", type=str, default="../data/train_dataset")
+    parser.add_argument("--dataset_name", metavar="./data/train_dataset", type=str, default="./data/train_dataset")
     parser.add_argument("--model_name_or_path", metavar="./models/dpr_model", type=str, default="klue/bert-base")
     parser.add_argument("--data_path", metavar="./data", type=str, default="./data")
     parser.add_argument("--context_path", metavar="wikipedia_documents", type=str, default="wikipedia_documents.json")

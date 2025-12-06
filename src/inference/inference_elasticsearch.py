@@ -1,3 +1,30 @@
+"""
+
+python -m src.inference.inference_elasticsearch \
+  --output_dir outputs/eval_es_k100/ \
+  --dataset_name data/train_dataset/ \
+  --model_name_or_path baseline/models/train_dataset/ \
+  --do_eval \
+  --eval_retrieval \
+  --top_k_retrieval 100 \
+  --use_wandb True \
+  --wandb_project "retrieval" \
+  --wandb_run_name "es_k100_eval"
+
+
+python -m src.inference.inference_elasticsearch \
+  --output_dir outputs/pred_es_k100/ \
+  --dataset_name data/test_dataset/ \
+  --model_name_or_path baseline/models/train_dataset/ \
+  --do_predict \
+  --eval_retrieval \
+  --top_k_retrieval 100 \
+  --use_wandb True \
+  --wandb_project "retrieval" \
+  --wandb_run_name "es_k100_submit"
+
+
+"""
 import logging
 import os
 import sys
@@ -15,7 +42,7 @@ from datasets import (
     load_from_disk,
 )
 # ES
-from ..retrieval_elasticsearch import ElasticSearchRetrieval
+from ..retrieval.retrieval_elasticsearch import ElasticSearchRetrieval
 from ..training import QuestionAnsweringTrainer
 from transformers import (
     AutoConfig,

@@ -71,9 +71,9 @@ src/wandb/
 *.bak
 
 # AI tools configuration
-.gemini/
 .agent/
 .cursor/
+.gemini/
 
 # Binary embedding files
 *.bin
