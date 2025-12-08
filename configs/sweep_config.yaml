@@ -1,7 +1,13 @@
 program: src/training/train.py
+command:
+  - ${env}
+  - ${interpreter}
+  - "-m"
+  - "src.training.train"
+  - ${args}
 method: bayes  # 또는 "random"
 metric:
-  name: exact_match  # 최적화할 메트릭 (또는 eval_exact_match)
+  name: eval/exact_match  # 최적화할 메트릭 (또는 eval_exact_match)
   goal: maximize
 parameters:
   # Learning Rate
@@ -36,6 +42,9 @@ parameters:
   
   output_dir:
     value: "models/sweep_outputs"
+
+  overwrite_output_dir:
+    value: true
   
   do_train:
     value: true
