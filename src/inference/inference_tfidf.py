@@ -1,3 +1,16 @@
+"""
+python -m src.inference.inference_tfidf \
+  --output_dir outputs/eval_tfidf_k100/ \
+  --dataset_name data/train_dataset/ \
+  --model_name_or_path baseline/models/train_dataset/ \
+  --do_eval \
+  --eval_retrieval \
+  --top_k_retrieval 100 \
+  --use_wandb True \
+  --wandb_project "retrieval" \
+  --wandb_run_name "tfidf_k100_eval"
+"""
+
 import logging
 import os
 import sys
@@ -27,98 +40,66 @@ from transformers import (
     set_seed,
 )
 from ..utils import check_no_error, postprocess_qa_predictions
-from dataclasses import dataclass, field
-
 
 logger = logging.getLogger(__name__)
 
-####################
-@dataclass
-class WandbArguments:
-    """Arguments for wandb logging."""
-    use_wandb: bool = field(
-        default=False,
-        metadata={"help": "Whether to use wandb for logging."}
-    )
-    wandb_project: str = field(
-        default="retrieval",
-        metadata={"help": "Wandb project name."}
-    )
-    wandb_run_name: str = field(
-        default=None,
-        metadata={"help": "Wandb run name. If not set, will be auto-generated."}
-    )
-    wandb_entity: str = field(
-        default=None,
-        metadata={"help": "Wandb entity (team) name."}
-    )
-    experiment_note: str = field(
-        default="",
-        metadata={"help": "Optional note for this experiment."}
-    )
-
 
 def init_wandb(
-    wandb_args: WandbArguments,
-    model_args: ModelArguments,
     data_args: DataTrainingArguments,
+    model_args: ModelArguments,
     training_args: TrainingArguments,
 ):
-    """Initialize wandb with config."""
+    """
+    elasticsearch 버전이랑 비슷하게 wandb 초기화하는 함수
+    DataTrainingArguments 안에 있는 use_wandb, wandb_project, wandb_run_name 사용.
+    """
     import wandb
-    
-    # Auto-generate run name if not provided
-    run_name = wandb_args.wandb_run_name
-    if run_name is None:
-        run_name = f"bm25_k{data_args.top_k_retrieval}"
-    
+
+    # run_name 없으면 자동 생성
+    run_name = data_args.wandb_run_name
+    if run_name is None or run_name == "":
+        run_name = f"tfidf_k{data_args.top_k_retrieval}"
+
     wandb.init(
-        project=wandb_args.wandb_project,
-        entity=wandb_args.wandb_entity,
+        project=data_args.wandb_project,
         name=run_name,
         config={
-            # Retrieval parameters
-            "retrieval_method": "BM25",
+            # Retrieval 관련
+            "retrieval_method": "Sparse_TFIDF",
             "top_k_retrieval": data_args.top_k_retrieval,
-            
-            # Model parameters
+
+            # Model 관련
             "model_name_or_path": model_args.model_name_or_path,
-            
-            # Data parameters
+
+            # Data 관련
             "dataset_name": data_args.dataset_name,
             "max_seq_length": data_args.max_seq_length,
             "doc_stride": data_args.doc_stride,
             "max_answer_length": data_args.max_answer_length,
-            
-            # Training parameters
+
+            # Training 관련
             "output_dir": training_args.output_dir,
             "do_predict": training_args.do_predict,
             "do_eval": training_args.do_eval,
             "seed": training_args.seed,
-            
-            # Experiment note
-            "experiment_note": wandb_args.experiment_note,
-        }
+        },
     )
-    
+
     print(f"\n{'='*50}")
-    print(f"Wandb initialized!")
-    print(f"Project: {wandb_args.wandb_project}")
+    print("Wandb initialized!")
+    print(f"Project: {data_args.wandb_project}")
     print(f"Run name: {run_name}")
     print(f"{'='*50}\n")
-    
+
     return wandb
-
-
-####################
 
 
 def main():
 
     parser = HfArgumentParser(
-    (ModelArguments, DataTrainingArguments, TrainingArguments, WandbArguments)
+        (ModelArguments, DataTrainingArguments, TrainingArguments)
     )
-    model_args, data_args, training_args, wandb_args = parser.parse_args_into_dataclasses()
+    model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
     training_args.do_train = True
 
@@ -135,14 +116,10 @@ def main():
 
     set_seed(training_args.seed)
 
-    #########################
-    wandb = None
-    if wandb_args.use_wandb:
-        wandb = init_wandb(wandb_args, model_args, data_args, training_args)
-    ##########################
-
-
-    datasets = load_from_disk(data_args.dataset_name)
+    # ✅ wandb 초기화
+    wandb_run = None
+    if getattr(data_args, "use_wandb", False):
+        wandb_run = init_wandb(data_args, model_args, training_args)
 
     datasets = load_from_disk(data_args.dataset_name)
     print(datasets)
@@ -160,45 +137,49 @@ def main():
         config=model_config,
     )
 
+    # ✅ retrieval + wandb logging
     should_run_retrieval = data_args.eval_retrieval
+    retrieval_metrics = None
     if should_run_retrieval:
-        datasets = run_sparse_retrieval(
+        datasets, retrieval_metrics = run_sparse_retrieval(
             tokenizer.tokenize,
             datasets,
             training_args,
             data_args,
         )
-        ###########################333
-        # Log retrieval metrics to wandb
-        if wandb is not None and retrieval_metrics:
-            wandb.log({
-                "retrieval/accuracy": retrieval_metrics.get("retrieval_accuracy"),
-                "retrieval/mrr": retrieval_metrics.get("mrr"),
-                "retrieval/correct_count": retrieval_metrics.get("correct_count"),
-                "retrieval/total_count": retrieval_metrics.get("total_count"),
-                "retrieval/top_k": retrieval_metrics.get("top_k"),
-            })
-            print(f"[Wandb] Logged retrieval metrics: {retrieval_metrics}")
-        ###############################
 
+        if wandb_run is not None and retrieval_metrics is not None:
+            import wandb
+            wandb.log(
+                {
+                    "retrieval/accuracy": retrieval_metrics.get("retrieval_accuracy"),
+                    "retrieval/correct_count": retrieval_metrics.get("correct_count"),
+                    "retrieval/total_count": retrieval_metrics.get("total_count"),
+                    "retrieval/top_k": retrieval_metrics.get("top_k"),
+                }
+            )
+            print(f"[Wandb] Logged retrieval metrics: {retrieval_metrics}")
+
+    # ✅ MRC + wandb logging
     should_run_mrc = training_args.do_eval or training_args.do_predict
     if should_run_mrc:
-        run_mrc(data_args, training_args, model_args, datasets, tokenizer, model)
+        mrc_metrics = run_mrc(data_args, training_args, model_args, datasets, tokenizer, model)
 
-        #######################
-        # Log MRC metrics to wandb (if available)
-        if wandb is not None and mrc_metrics:
-            wandb.log({
-                "mrc/exact_match": mrc_metrics.get("exact_match"),
-                "mrc/f1": mrc_metrics.get("f1"),
-            })
+        if wandb_run is not None and mrc_metrics is not None:
+            import wandb
+            wandb.log(
+                {
+                    "mrc/exact_match": mrc_metrics.get("exact_match"),
+                    "mrc/f1": mrc_metrics.get("f1"),
+                }
+            )
             print(f"[Wandb] Logged MRC metrics: {mrc_metrics}")
-    
-    # Finish wandb run
-    if wandb is not None:
+
+    # ✅ wandb 종료
+    if wandb_run is not None:
+        import wandb
         wandb.finish()
         print("[Wandb] Run finished successfully!")
-        #########################
 
 
 def run_sparse_retrieval(
@@ -208,7 +189,7 @@ def run_sparse_retrieval(
     data_args: DataTrainingArguments,
     data_path: str = "data",
     context_path: str = "wikipedia_documents.json",
-) -> DatasetDict:
+) -> Tuple[DatasetDict, Dict]:
 
     sparse_retriever = SparseRetrieval(
         tokenize_fn=tokenize_fn, data_path=data_path, context_path=context_path
@@ -225,6 +206,30 @@ def run_sparse_retrieval(
         retrieved_df = sparse_retriever.retrieve(
             datasets["validation"], topk=data_args.top_k_retrieval
         )
+
+    # ✅ 간단 retrieval accuracy 계산 (Elasticsearch 쪽이랑 동일한 방식)
+    retrieval_metrics = None
+    topk = data_args.top_k_retrieval
+    if "original_context" in retrieved_df.columns:
+        # 정답 문단 텍스트가 top-k context 문자열 안에 포함되어 있는지 체크
+        correct_mask = retrieved_df.apply(
+            lambda row: row["original_context"] in row["context"],
+            axis=1,
+        )
+        correct_count = int(correct_mask.sum())
+        total_count = len(retrieved_df)
+        accuracy = correct_count / total_count if total_count > 0 else 0.0
+
+        retrieval_metrics = {
+            "retrieval_accuracy": accuracy,
+            "correct_count": correct_count,
+            "total_count": total_count,
+            "top_k": topk,
+            "mrr": None,
+        }
+
+        # MRC용에서는 original_context 필요 없으니 제거
+        retrieved_df = retrieved_df.drop(columns=["original_context"])
 
     dataset_features = None
     is_predict_mode = training_args.do_predict
@@ -255,8 +260,11 @@ def run_sparse_retrieval(
             }
         )
     
-    result_datasets = DatasetDict({"validation": Dataset.from_pandas(retrieved_df, features=dataset_features)})
-    return result_datasets
+    result_datasets = DatasetDict(
+        {"validation": Dataset.from_pandas(retrieved_df, features=dataset_features)}
+    )
+    return result_datasets, retrieval_metrics
+
 
 def run_mrc(
     data_args: DataTrainingArguments,
@@ -265,7 +273,7 @@ def run_mrc(
     datasets: DatasetDict,
     tokenizer,
     model,
-) -> NoReturn:
+) -> Dict:
 
     val_column_names = datasets["validation"].column_names
 
@@ -388,6 +396,8 @@ def run_mrc(
 
     should_predict = training_args.do_predict
     should_eval = training_args.do_eval
+
+    mrc_metrics = None
     
     if should_predict:
         prediction_results = qa_trainer.predict(
@@ -402,16 +412,14 @@ def run_mrc(
         eval_metrics = qa_trainer.evaluate()
         eval_metrics["eval_samples"] = len(processed_dataset)
 
-        ##############################
-        # Extract EM and F1 for wandb logging
-        mrc_metrics = {
-            "exact_match": eval_metrics.get("eval_exact_match"),
-            "f1": eval_metrics.get("eval_f1"),
-        }
-        #################################
-
         qa_trainer.log_metrics("test", eval_metrics)
         qa_trainer.save_metrics("test", eval_metrics)
+
+        # ✅ wandb로 넘겨줄 수 있도록 EM/F1만 뽑아서 dict로 리턴
+        mrc_metrics = {
+            "exact_match": eval_metrics.get("exact_match"),
+            "f1": eval_metrics.get("f1"),
+        }
 
     return mrc_metrics
 

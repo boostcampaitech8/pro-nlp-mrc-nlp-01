@@ -1,4 +1,6 @@
 """
+elasticsearch 켜져 있는지 확인 
+> curl http://localhost:9200
 
 python -m src.inference.inference_elasticsearch \
   --output_dir outputs/eval_es_k100/ \
@@ -62,48 +64,22 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class WandbArguments:
-    """Arguments for wandb logging."""
-    use_wandb: bool = field(
-        default=False,
-        metadata={"help": "Whether to use wandb for logging."}
-    )
-    wandb_project: str = field(
-        default="retrieval",
-        metadata={"help": "Wandb project name."}
-    )
-    wandb_run_name: str = field(
-        default=None,
-        metadata={"help": "Wandb run name. If not set, will be auto-generated."}
-    )
-    wandb_entity: str = field(
-        default=None,
-        metadata={"help": "Wandb entity (team) name."}
-    )
-    experiment_note: str = field(
-        default="",
-        metadata={"help": "Optional note for this experiment."}
-    )
-
 
 def init_wandb(
-    wandb_args: WandbArguments,
-    model_args: ModelArguments,
     data_args: DataTrainingArguments,
+    model_args: ModelArguments,
     training_args: TrainingArguments,
 ):
     """Initialize wandb with config."""
     import wandb
     
     # Auto-generate run name if not provided
-    run_name = wandb_args.wandb_run_name
+    run_name = data_args.wandb_run_name
     if run_name is None:
         run_name = f"es_bm25_k{data_args.top_k_retrieval}"
     
     wandb.init(
-        project=wandb_args.wandb_project,
-        entity=wandb_args.wandb_entity,
+        project=data_args.wandb_project,
         name=run_name,
         config={
             # Retrieval parameters
@@ -126,13 +102,13 @@ def init_wandb(
             "seed": training_args.seed,
             
             # Experiment note
-            "experiment_note": wandb_args.experiment_note,
+            "experiment_note": getattr(data_args, "experiment_note", ""),
         }
     )
     
     print(f"\n{'='*50}")
     print(f"Wandb initialized!")
-    print(f"Project: {wandb_args.wandb_project}")
+    print(f"Project: {data_args.wandb_project}")
     print(f"Run name: {run_name}")
     print(f"{'='*50}\n")
     
@@ -143,9 +119,9 @@ def main():
 
     # wandb 
     parser = HfArgumentParser(
-        (ModelArguments, DataTrainingArguments, TrainingArguments, WandbArguments)
+        (ModelArguments, DataTrainingArguments, TrainingArguments)
     )
-    model_args, data_args, training_args, wandb_args = parser.parse_args_into_dataclasses()
+    model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     ########
 
     training_args.do_train = True
@@ -165,8 +141,8 @@ def main():
 
     # Initialize wandb if enabled
     wandb = None
-    if wandb_args.use_wandb:
-        wandb = init_wandb(wandb_args, model_args, data_args, training_args)
+    if data_args.use_wandb:
+        wandb = init_wandb(data_args, model_args, training_args)
     ###########
 
     datasets = load_from_disk(data_args.dataset_name)
@@ -270,8 +246,14 @@ def run_sparse_retrieval(
     retrieval_metrics = None
     if "original_context" in retrieved_df.columns:
         # 정답 문서가 top-k context 문자열 안에 포함되었는지만 확인
+        """
         correct_mask = retrieved_df["context"].str.contains(
             retrieved_df["original_context"], regex=False
+        )
+        """
+        correct_mask = retrieved_df.apply(
+            lambda row: row["original_context"] in row["context"],
+            axis=1
         )
         correct_count = int(correct_mask.sum())
         total_count = len(retrieved_df)
