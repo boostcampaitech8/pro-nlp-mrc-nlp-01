@@ -21,6 +21,7 @@ from transformers import (
     set_seed,
 )
 from ..utils import check_no_error, postprocess_qa_predictions
+import wandb
 
 # PyTorch 2.6+ 호환성: torch.load의 weights_only 기본값 변경 대응
 # numpy 객체를 안전하게 로드할 수 있도록 설정
@@ -50,6 +51,20 @@ def main():
     )
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     
+    if training_args.report_to and "wandb" in training_args.report_to:
+        wandb.init(
+            project="reader-parmeter-tuning",  # 프로젝트 이름
+            config={
+                "learning_rate": training_args.learning_rate,
+                "num_train_epochs": training_args.num_train_epochs,
+                "per_device_train_batch_size": training_args.per_device_train_batch_size,
+                "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
+                "lr_scheduler_type": training_args.lr_scheduler_type,
+                "model_name": model_args.model_name_or_path,
+            }
+        )
+
+
     print(model_args.model_name_or_path)
     print(f"model is from {model_args.model_name_or_path}")
     print(f"data is from {data_args.dataset_name}")
@@ -127,6 +142,7 @@ def run_mrc(
             stride=data_args.doc_stride,
             return_overflowing_tokens=True,
             return_offsets_mapping=True,
+            return_token_type_ids=False, # roberta모델을 사용할 경우 False, bert를 사용할 경우 True로 표기해야합니다.           
             padding=pad_strategy,
         )
 
