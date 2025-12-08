@@ -347,8 +347,26 @@ def run_mrc(
         eval_metrics["eval_samples"] = len(processed_val_data)
 
         # wandb에 로깅하기 위해 log() 메서드 사용
-        qa_trainer.log(eval_metrics)
-        qa_trainer.log_metrics("eval", eval_metrics)
+        # qa_trainer.log(eval_metrics)
+        # qa_trainer.log_metrics("eval", eval_metrics)
+        # qa_trainer.save_metrics("eval", eval_metrics)
+
+        wandb_logs = {}
+        for key, value in eval_metrics.items():
+            # "eval_"로 시작하는 키를 "eval/"로 변경 (예: eval_exact_match -> eval/exact_match)
+            if key.startswith("eval_"):
+                new_key = key.replace("eval_", "eval/", 1)
+            elif key == "epoch":
+                new_key = "epoch"
+            else:
+                # 그 외의 경우 (예: eval_samples -> eval/samples)
+                new_key = f"eval/{key}" if not key.startswith("eval/") else key
+            
+            wandb_logs[new_key] = value
+
+        wandb.log(wandb_logs)
+        
+        # 파일 저장용은 원본 키(eval_...) 유지
         qa_trainer.save_metrics("eval", eval_metrics)
 
 if __name__ == "__main__":
