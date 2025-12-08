@@ -6,7 +6,7 @@ from transformers import AutoTokenizer
 # ==========================================
 # 사용자 설정 (train.py 실행 시의 인자값과 맞춰주세요)
 # ==========================================
-dataset_path = "/data/ephemeral/git/pro-nlp-mrc-nlp-01/data/train_dataset"  # dataset.arrow가 있는 폴더
+dataset_path = "/data/ephemeral/git/pro-nlp-mrc-nlp-01/data_negative"  # dataset.arrow가 있는 폴더
 model_name = "HANTAEK/klue-roberta-large-korquad-v1-qa-finetuned"             # 사용 중인 모델 이름
 max_seq_length = 384                    # max_seq_length 설정값
 doc_stride = 128                        # doc_stride 설정값

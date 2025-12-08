@@ -284,7 +284,11 @@ def run_mrc(
         elif is_evaluating:
             ref_list = []
             for val_example in datasets["validation"]:
-                ref_list.append({"id": val_example["id"], "answers": val_example[ans_col]})
+                # ref_list.append({"id": val_example["id"], "answers": val_example[ans_col]})
+                # [수정] 정답이 있는 경우(Positive)만 평가 데이터에 포함시킨다.
+                # SQuAD v1 Metric이 빈 정답 리스트를 처리하지 못하는 오류 방지
+                if len(val_example[answer_col]["text"]) > 0:
+                    ref_list.append({"id": val_example["id"], "answers": val_example[answer_col]})
             return EvalPrediction(
                 predictions=formatted_preds, label_ids=ref_list
             )

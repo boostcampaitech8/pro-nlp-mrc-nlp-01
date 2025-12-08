@@ -20,7 +20,7 @@ parameters:
   
   # Epoch
   num_train_epochs:
-    values: [3, 5, 7]
+    values: [1]
   
   # Batch Size (논리적 배치 사이즈 = per_device_batch_size * gradient_accumulation_steps)
   per_device_train_batch_size:
@@ -38,7 +38,8 @@ parameters:
     value: "HANTAEK/klue-roberta-large-korquad-v1-qa-finetuned"  # 또는 "klue/roberta-large"
   
   dataset_name:
-    value: "data/train_dataset"
+    # value: "data/train_dataset"
+    value: "data_negative"
   
   output_dir:
     value: "models/sweep_outputs"
