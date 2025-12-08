@@ -88,3 +88,15 @@ class DataTrainingArguments:
     use_faiss: bool = field(
         default=False, metadata={"help": "Whether to build with faiss"}
     )
+    use_wandb: bool = field(
+        default=False, metadata={"help": "Whether to use Weights & Biases for logging"}
+    )
+    wandb_project: str = field(
+        default="retrieval", metadata={"help": "WandB project name"}
+    )
+    wandb_run_name: str = field(
+        default="run", metadata={"help": "WandB run name"}
+    )
+    context_file: str = field(
+        default="wikipedia_documents.json", metadata={"help": "Path to context file"}
+    )
