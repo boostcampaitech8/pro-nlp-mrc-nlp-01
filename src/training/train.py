@@ -329,7 +329,12 @@ def run_mrc(
     metric = evaluate.load("squad")
 
     def compute_metrics(p: EvalPrediction):
-        return metric.compute(predictions=p.predictions, references=p.label_ids)
+        metrics =  metric.compute(predictions=p.predictions, references=p.label_ids)
+
+        metrics["eval_exact_match"] = metrics["exact_match"]
+        metrics["eval_f1"] = metrics["f1"]
+
+        return metrics
 
     qa_trainer = QuestionAnsweringTrainer(
         model=model,
