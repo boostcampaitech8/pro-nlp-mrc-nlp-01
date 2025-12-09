@@ -356,6 +356,7 @@ def run_mrc(
             stride=data_args.doc_stride,
             return_overflowing_tokens=True,
             return_offsets_mapping=True,
+            return_token_type_ids=False,  # RoBERTa doesn't use token_type_ids
             padding=padding_mode,
         )
 
