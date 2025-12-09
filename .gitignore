@@ -1,6 +1,7 @@
 # Data folders
 data/
-
+data.tar.gz
+code.tar.gz
 # Code folder
 code/
 basecode/
@@ -73,7 +74,7 @@ src/wandb/
 # AI tools configuration
 .agent/
 .cursor/
-.gemini/
+
 # Binary embedding files
 *.bin
 
