@@ -214,12 +214,15 @@ def main():
         # Log retrieval metrics to wandb
         if wandb is not None and retrieval_metrics:
             wandb.log({
-                "retrieval/pre_rerank_accuracy": retrieval_metrics.get("pre_rerank_accuracy"),
-                "retrieval/pre_rerank_mrr": retrieval_metrics.get("pre_rerank_mrr"),
+                "retrieval/kure_accuracy": retrieval_metrics.get("kure_accuracy"),
+                # Hybrid (Pre-rerank) Metrics -> Standard Names
+                "retrieval/accuracy": retrieval_metrics.get("pre_rerank_accuracy"),
+                "retrieval/mrr": retrieval_metrics.get("pre_rerank_mrr"),
                 "retrieval/post_rerank_accuracy": retrieval_metrics.get("post_rerank_accuracy"),
                 "retrieval/post_rerank_mrr": retrieval_metrics.get("post_rerank_mrr"),
                 "retrieval/accuracy_improvement": retrieval_metrics.get("accuracy_improvement"),
                 "retrieval/mrr_improvement": retrieval_metrics.get("mrr_improvement"),
+                "retrieval/correct_count": retrieval_metrics.get("correct_count"),
             })
             print(f"[Wandb] Logged retrieval metrics: {retrieval_metrics}")
 

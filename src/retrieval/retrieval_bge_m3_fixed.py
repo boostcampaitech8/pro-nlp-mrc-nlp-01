@@ -8,6 +8,9 @@ from contextlib import contextmanager
 from typing import List, Union, Optional, Tuple, Dict
 from datasets import Dataset
 from tqdm.auto import tqdm
+from datasets import disable_progress_bar
+
+disable_progress_bar()
 
 
 @contextmanager

@@ -113,6 +113,9 @@ class HybridKURERetrieval:
         # Rerank 전 메트릭
         pre_rerank_correct = 0
         pre_rerank_mrr = 0.0
+        # KURE 단독 메트릭
+        kure_correct = 0
+        kure_mrr = 0.0
         # Rerank 후 메트릭
         post_rerank_correct = 0
         post_rerank_mrr = 0.0
@@ -164,18 +167,37 @@ class HybridKURERetrieval:
             
             # Hybrid 결과 (Rerank 전)
             pre_rerank_indices = [x[0] for x in hybrid_scores[:topk]]
+
+            # KURE 단독 결과 (Rerank 전)
+            kure_scores_with_idx = []
+            for j, k_idx in enumerate(k_indices):
+                score = k_scores[j] if j < len(k_scores) else 0.0
+                kure_scores_with_idx.append((k_idx, score))
             
-            # Rerank 전 메트릭 계산
+            kure_scores_with_idx.sort(key=lambda x: x[1], reverse=True)
+            kure_top_indices = [x[0] for x in kure_scores_with_idx[:topk]]
+
+            # Rerank 전 메트릭 계산 (Hybrid & KURE)
             if has_ground_truth:
                 example = query_or_dataset[i]
                 original_context = example["context"]
-                pre_rerank_contexts = [self.contexts[pid] for pid in pre_rerank_indices]
                 
+                # Hybrid
+                pre_rerank_contexts = [self.contexts[pid] for pid in pre_rerank_indices]
                 if any(original_context in rc or rc in original_context for rc in pre_rerank_contexts):
                     pre_rerank_correct += 1
                 for rank, rc in enumerate(pre_rerank_contexts):
                     if original_context in rc or rc in original_context:
                         pre_rerank_mrr += 1.0 / (rank + 1)
+                        break
+                
+                # KURE Only
+                kure_contexts_list = [self.contexts[pid] for pid in kure_top_indices]
+                if any(original_context in rc or rc in original_context for rc in kure_contexts_list):
+                    kure_correct += 1
+                for rank, rc in enumerate(kure_contexts_list):
+                    if original_context in rc or rc in original_context:
+                        kure_mrr += 1.0 / (rank + 1)
                         break
             
             # Reranking 단계 (활성화된 경우)
@@ -231,6 +253,10 @@ class HybridKURERetrieval:
         if not is_single and has_ground_truth:
             n = len(queries)
             
+            # KURE Only 메트릭
+            kure_acc = kure_correct / n
+            kure_mrr_val = kure_mrr / n
+
             # Rerank 전 메트릭
             pre_acc = pre_rerank_correct / n
             pre_mrr = pre_rerank_mrr / n
@@ -240,12 +266,15 @@ class HybridKURERetrieval:
             post_mrr = post_rerank_mrr / n
             
             metrics = {
+                "kure_accuracy": kure_acc,
+                "kure_mrr": kure_mrr_val,
                 "pre_rerank_accuracy": pre_acc,
                 "pre_rerank_mrr": pre_mrr,
                 "post_rerank_accuracy": post_acc,
                 "post_rerank_mrr": post_mrr,
                 "accuracy_improvement": post_acc - pre_acc,
                 "mrr_improvement": post_mrr - pre_mrr,
+                "correct_count": pre_rerank_correct,
                 "total_count": n,
                 "top_k": topk,
                 "alpha": alpha,
@@ -253,6 +282,7 @@ class HybridKURERetrieval:
             }
             
             print(f"\n{'='*50}")
+            print(f"[KURE Only]     Accuracy: {kure_acc:.4f}, MRR: {kure_mrr_val:.4f}")
             print(f"[Before Rerank] Accuracy: {pre_acc:.4f}, MRR: {pre_mrr:.4f}")
             if self.use_reranker:
                 print(f"[After Rerank]  Accuracy: {post_acc:.4f}, MRR: {post_mrr:.4f}")
