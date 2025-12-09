@@ -1,5 +1,7 @@
 # Data folders
 data/
+data_negative/
+data_hybrid/
 
 # Code folder
 code/
