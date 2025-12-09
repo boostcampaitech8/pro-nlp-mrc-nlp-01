@@ -132,6 +132,11 @@ def run_mrc(
 
         overflow_map = tokenized_examples.pop("overflow_to_sample_mapping")
         offset_maps = tokenized_examples.pop("offset_mapping")
+        
+        # RoBERTa-large (or specific finetunes) might have type_vocab_size=1 but use BertTokenizer (type_ids 0/1)
+        # We must remove token_type_ids to prevent index out of bounds if they are present.
+        if "token_type_ids" in tokenized_examples:
+            tokenized_examples.pop("token_type_ids")
 
         tokenized_examples["start_positions"] = []
         tokenized_examples["end_positions"] = []
@@ -211,6 +216,11 @@ def run_mrc(
         )
 
         overflow_to_sample = tokenized_examples.pop("overflow_to_sample_mapping")
+        
+        # Remove token_type_ids if present to avoid crash on RoBERTa
+        if "token_type_ids" in tokenized_examples:
+            tokenized_examples.pop("token_type_ids")
+            
         tokenized_examples["example_id"] = []
 
         total_examples = len(tokenized_examples["input_ids"])

@@ -22,6 +22,12 @@ class ModelArguments:
             "help": "Pretrained tokenizer name or path if not the same as model_name"
         },
     )
+    retriever_name_or_path: Optional[str] = field(
+        default="outputs/dpr_test",
+        metadata={
+            "help": "Path to pretrained retriever model or model identifier from huggingface.co/models"
+        },
+    )
 
 @dataclass
 class DataTrainingArguments:
@@ -74,11 +80,23 @@ class DataTrainingArguments:
         default=64, metadata={"help": "Define how many clusters to use for faiss."}
     )
     top_k_retrieval: int = field(
-        default=10,
+        default=100,
         metadata={
             "help": "Define how many top-k passages to retrieve based on similarity."
         },
     )
     use_faiss: bool = field(
         default=False, metadata={"help": "Whether to build with faiss"}
+    )
+    use_wandb: bool = field(
+        default=False, metadata={"help": "Whether to use Weights & Biases for logging"}
+    )
+    wandb_project: str = field(
+        default="retrieval", metadata={"help": "WandB project name"}
+    )
+    wandb_run_name: str = field(
+        default="run", metadata={"help": "WandB run name"}
+    )
+    context_file: str = field(
+        default="wikipedia_documents.json", metadata={"help": "Path to context file"}
     )

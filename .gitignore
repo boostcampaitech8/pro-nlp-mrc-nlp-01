@@ -1,6 +1,7 @@
 # Data folders
 data/
-
+data.tar.gz
+code.tar.gz
 # Code folder
 code/
 basecode/
@@ -69,4 +70,11 @@ src/wandb/
 *.tmp
 *.temp
 *.bak
+
+# AI tools configuration
+.agent/
+.cursor/
+
+# Binary embedding files
+*.bin
 
