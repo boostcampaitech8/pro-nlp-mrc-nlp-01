@@ -148,6 +148,9 @@ def main():
         (ModelArguments, DataTrainingArguments, TrainingArguments)
     )
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    
+    # Custom DataCollator에서 raw columns을 사용하므로 False로 설정
+    training_args.remove_unused_columns = False
 
     print(f"Model is from {model_args.model_name_or_path}")
     print(f"Data is from {data_args.dataset_name}")

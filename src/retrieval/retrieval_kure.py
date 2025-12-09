@@ -47,9 +47,9 @@ class KURERetrieval:
         print(f"Loading SentenceTransformer model: {model_name}")
         self.model = SentenceTransformer(model_name)
         
-        # Use GPU if available
+        # Use GPU with FP16 for memory efficiency
         if torch.cuda.is_available():
-            self.model = self.model.to("cuda")
+            self.model = self.model.half().to("cuda")  # FP16 for reduced memory
 
         self.p_embedding = None
         self.indexer = None
@@ -74,10 +74,10 @@ class KURERetrieval:
             # Using encode with show_progress_bar=True
             self.p_embedding = self.model.encode(
                 self.contexts,
-                batch_size=128,
+                batch_size=64,  # FP16 allows larger batch size
                 show_progress_bar=True,
                 convert_to_numpy=True,
-                normalize_embeddings=False # Check if normalization is needed? usually dot product for SBERT
+                normalize_embeddings=False
             )
             
             print(f"Embedding shape: {self.p_embedding.shape}")

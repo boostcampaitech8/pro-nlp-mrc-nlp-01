@@ -3,6 +3,7 @@ import os
 import time
 import numpy as np
 import pandas as pd
+import torch
 from contextlib import contextmanager
 from typing import List, Union, Optional
 from datasets import Dataset
@@ -16,14 +17,15 @@ def timer(name):
     print(f"[{name}] done in {time.time() - t0:.3f} s")
 
 
-class BGEM3Retrieval:
+class BGEM3RetrievalOptimized:
     """
-    BGE-M3 기반 Hybrid Retrieval
-    - Dense retrieval (semantic similarity)
-    - Sparse retrieval (learned term weights, SPLADE-like)
-    - ColBERT (token-level interaction)
+    메모리 최적화된 BGE-M3 Hybrid Retrieval + Re-ranker
     
-    한국어 완벽 지원!
+    주요 개선사항:
+    - 동적 배치 크기 조정
+    - 메모리 효율적인 임베딩 저장
+    - Re-ranker 통합
+    - Hard negative sampling 지원
     """
     
     def __init__(
@@ -31,19 +33,24 @@ class BGEM3Retrieval:
         data_path: str = "data",
         context_path: str = "wikipedia_documents.json",
         model_name: str = "BAAI/bge-m3",
+        reranker_name: str = "BAAI/bge-reranker-v2-m3",
         use_fp16: bool = True,
-        batch_size: int = 12,
-        max_length: int = 512,  # 8192까지 가능하지만 메모리 고려
+        batch_size: int = 8,  # 12 -> 8로 감소
+        max_length: int = 512,
         use_dense: bool = True,
         use_sparse: bool = True,
-        use_colbert: bool = False,  # 메모리 많이 씀
+        use_colbert: bool = False,
+        use_reranker: bool = True,
+        max_memory_gb: float = 28.0,  # 32GB 중 28GB만 사용
     ):
         self.data_path = data_path
-        self.batch_size = batch_size
+        self.base_batch_size = batch_size
         self.max_length = max_length
         self.use_dense = use_dense
         self.use_sparse = use_sparse
         self.use_colbert = use_colbert
+        self.use_reranker = use_reranker
+        self.max_memory_gb = max_memory_gb
 
         # Wikipedia 문서 로드
         with open(os.path.join(data_path, context_path), "r", encoding="utf-8") as f:
@@ -55,82 +62,137 @@ class BGEM3Retrieval:
 
         print(f"Number of passages: {len(self.contexts)}")
 
-        # BGE-M3 모델 로드
+        # BGE-M3 모델 로드 (메모리 효율화)
         print(f"Loading BGE-M3 model: {model_name}")
         from FlagEmbedding import BGEM3FlagModel
         
         self.model = BGEM3FlagModel(
             model_name,
             use_fp16=use_fp16,
-            device='cuda'  # 또는 'cpu'
+            device='cuda'
         )
-        print("✅ BGE-M3 model loaded successfully")
+        print("✅ BGE-M3 model loaded")
+
+        # Re-ranker 로드 (선택적)
+        self.reranker = None
+        if use_reranker:
+            print(f"Loading Re-ranker: {reranker_name}")
+            from FlagEmbedding import FlagReranker
+            self.reranker = FlagReranker(
+                reranker_name,
+                use_fp16=use_fp16,
+                device='cuda'
+            )
+            print("✅ Re-ranker loaded")
 
         # Embeddings
         self.dense_embeddings = None
         self.sparse_embeddings = None
         self.colbert_embeddings = None
 
+    def _get_adaptive_batch_size(self, texts: List[str]) -> int:
+        """텍스트 길이에 따라 동적으로 배치 크기 조정"""
+        avg_length = sum(len(t) for t in texts) / len(texts)
+        
+        if avg_length < 128:
+            return min(self.base_batch_size * 2, 16)
+        elif avg_length < 256:
+            return self.base_batch_size
+        elif avg_length < 512:
+            return max(self.base_batch_size // 2, 4)
+        else:
+            return max(self.base_batch_size // 4, 2)
+
+    def _clear_memory(self):
+        """메모리 정리"""
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
     def get_embeddings(self):
-        """Passage embeddings 생성 또는 로드"""
+        """Passage embeddings 생성 또는 로드 (메모리 최적화)"""
         
         # 파일 경로
-        dense_path = os.path.join(self.data_path, "bge_m3_dense.npy")
-        sparse_path = os.path.join(self.data_path, "bge_m3_sparse.npz")
-        colbert_path = os.path.join(self.data_path, "bge_m3_colbert.npy")
+        dense_path = os.path.join(self.data_path, "bge_m3_dense_opt.npy")
+        sparse_path = os.path.join(self.data_path, "bge_m3_sparse_opt.pkl")
+        colbert_path = os.path.join(self.data_path, "bge_m3_colbert_opt.pkl")
 
         # 로드 시도
-        loaded = self._try_load_embeddings(dense_path, sparse_path, colbert_path)
-        if loaded:
+        if self._try_load_embeddings(dense_path, sparse_path, colbert_path):
             return
 
         # 새로 생성
-        print("Building BGE-M3 embeddings...")
+        print("Building optimized BGE-M3 embeddings...")
         print(f"Config: dense={self.use_dense}, sparse={self.use_sparse}, colbert={self.use_colbert}")
         
         all_dense = []
         all_sparse = []
         all_colbert = []
 
-        # Batch 처리
-        num_batches = (len(self.contexts) + self.batch_size - 1) // self.batch_size
+        # 동적 배치 처리
+        i = 0
+        pbar = tqdm(total=len(self.contexts), desc="Encoding")
         
         with timer("Encoding passages"):
-            for i in tqdm(range(0, len(self.contexts), self.batch_size), total=num_batches):
-                batch = self.contexts[i:i + self.batch_size]
+            while i < len(self.contexts):
+                # 현재 배치의 적응적 크기 결정
+                end_idx = min(i + self.base_batch_size, len(self.contexts))
+                batch = self.contexts[i:end_idx]
                 
-                # Encode
-                embeddings = self.model.encode(
-                    batch,
-                    batch_size=self.batch_size,
-                    max_length=self.max_length,
-                    return_dense=self.use_dense,
-                    return_sparse=self.use_sparse,
-                    return_colbert_vecs=self.use_colbert,
-                )
+                batch_size = self._get_adaptive_batch_size(batch)
+                
+                try:
+                    # Encode
+                    embeddings = self.model.encode(
+                        batch,
+                        batch_size=batch_size,
+                        max_length=self.max_length,
+                        return_dense=self.use_dense,
+                        return_sparse=self.use_sparse,
+                        return_colbert_vecs=self.use_colbert,
+                    )
 
-                # Dense
-                if self.use_dense:
-                    all_dense.append(embeddings['dense_vecs'])
+                    # Dense (float16으로 저장하여 메모리 절약)
+                    if self.use_dense:
+                        dense_batch = embeddings['dense_vecs'].astype(np.float16)
+                        all_dense.append(dense_batch)
 
-                # Sparse
-                if self.use_sparse:
-                    # Sparse는 list of dicts 형태
-                    all_sparse.extend(embeddings['lexical_weights'])
+                    # Sparse
+                    if self.use_sparse:
+                        all_sparse.extend(embeddings['lexical_weights'])
 
-                # ColBERT
-                if self.use_colbert:
-                    all_colbert.extend(embeddings['colbert_vecs'])
+                    # ColBERT (float16 변환)
+                    if self.use_colbert:
+                        colbert_batch = [
+                            vec.astype(np.float16) for vec in embeddings['colbert_vecs']
+                        ]
+                        all_colbert.extend(colbert_batch)
+
+                    i = end_idx
+                    pbar.update(len(batch))
+                    
+                    # 주기적으로 메모리 정리
+                    if i % (self.base_batch_size * 10) == 0:
+                        self._clear_memory()
+
+                except RuntimeError as e:
+                    if "out of memory" in str(e):
+                        print(f"\n⚠️ OOM at batch {i}, reducing batch size...")
+                        self.base_batch_size = max(self.base_batch_size // 2, 1)
+                        self._clear_memory()
+                    else:
+                        raise e
+
+        pbar.close()
 
         # 저장
         if self.use_dense:
             self.dense_embeddings = np.vstack(all_dense)
             np.save(dense_path, self.dense_embeddings)
-            print(f"✅ Dense embeddings saved: {self.dense_embeddings.shape}")
+            print(f"✅ Dense embeddings saved: {self.dense_embeddings.shape} (float16)")
 
         if self.use_sparse:
             self.sparse_embeddings = all_sparse
-            # Sparse는 pickle로 저장
             import pickle
             with open(sparse_path, 'wb') as f:
                 pickle.dump(self.sparse_embeddings, f)
@@ -138,46 +200,44 @@ class BGEM3Retrieval:
 
         if self.use_colbert:
             self.colbert_embeddings = all_colbert
-            # ColBERT는 가변 길이라 pickle 사용
             import pickle
             with open(colbert_path, 'wb') as f:
                 pickle.dump(self.colbert_embeddings, f)
-            print(f"✅ ColBERT embeddings saved: {len(self.colbert_embeddings)} passages")
+            print(f"✅ ColBERT embeddings saved: {len(self.colbert_embeddings)} passages (float16)")
+
+        self._clear_memory()
 
     def _try_load_embeddings(self, dense_path, sparse_path, colbert_path):
         """기존 embeddings 로드 시도"""
-        loaded_any = False
-
-        if self.use_dense and os.path.exists(dense_path):
-            with timer("Loading dense embeddings"):
-                self.dense_embeddings = np.load(dense_path)
-                print(f"Loaded dense: {self.dense_embeddings.shape}")
-                loaded_any = True
-
-        if self.use_sparse and os.path.exists(sparse_path):
-            with timer("Loading sparse embeddings"):
-                import pickle
-                with open(sparse_path, 'rb') as f:
-                    self.sparse_embeddings = pickle.load(f)
-                print(f"Loaded sparse: {len(self.sparse_embeddings)} passages")
-                loaded_any = True
-
-        if self.use_colbert and os.path.exists(colbert_path):
-            with timer("Loading colbert embeddings"):
-                import pickle
-                with open(colbert_path, 'rb') as f:
-                    self.colbert_embeddings = pickle.load(f)
-                print(f"Loaded colbert: {len(self.colbert_embeddings)} passages")
-                loaded_any = True
-
-        # 모든 필요한 embedding이 로드되었는지 확인
         all_loaded = True
-        if self.use_dense and self.dense_embeddings is None:
-            all_loaded = False
-        if self.use_sparse and self.sparse_embeddings is None:
-            all_loaded = False
-        if self.use_colbert and self.colbert_embeddings is None:
-            all_loaded = False
+
+        if self.use_dense:
+            if os.path.exists(dense_path):
+                with timer("Loading dense embeddings"):
+                    self.dense_embeddings = np.load(dense_path)
+                    print(f"Loaded dense: {self.dense_embeddings.shape}")
+            else:
+                all_loaded = False
+
+        if self.use_sparse:
+            if os.path.exists(sparse_path):
+                with timer("Loading sparse embeddings"):
+                    import pickle
+                    with open(sparse_path, 'rb') as f:
+                        self.sparse_embeddings = pickle.load(f)
+                    print(f"Loaded sparse: {len(self.sparse_embeddings)} passages")
+            else:
+                all_loaded = False
+
+        if self.use_colbert:
+            if os.path.exists(colbert_path):
+                with timer("Loading colbert embeddings"):
+                    import pickle
+                    with open(colbert_path, 'rb') as f:
+                        self.colbert_embeddings = pickle.load(f)
+                    print(f"Loaded colbert: {len(self.colbert_embeddings)} passages")
+            else:
+                all_loaded = False
 
         return all_loaded
 
@@ -194,37 +254,34 @@ class BGEM3Retrieval:
         return result
 
     def _compute_dense_score(self, query_vec, passage_vecs):
-        """Dense 스코어 계산 (cosine similarity)"""
-        # query_vec: (1, dim)
-        # passage_vecs: (num_passages, dim)
+        """Dense 스코어 계산"""
+        # float16 -> float32로 변환하여 계산
+        query_vec = query_vec.astype(np.float32)
+        passage_vecs = passage_vecs.astype(np.float32)
         scores = np.dot(passage_vecs, query_vec.T).squeeze()
         return scores
 
     def _compute_sparse_score(self, query_weights, passage_weights_list):
-        """Sparse 스코어 계산 (learned term matching, SPLADE-like)"""
+        """Sparse 스코어 계산"""
         scores = []
-        
         for passage_weights in passage_weights_list:
             score = 0.0
-            # Query와 passage의 공통 토큰에 대해 가중치 곱
             for token_id, q_weight in query_weights.items():
                 if token_id in passage_weights:
                     score += q_weight * passage_weights[token_id]
             scores.append(score)
-        
         return np.array(scores)
 
     def _compute_colbert_score(self, query_vecs, passage_vecs_list):
-        """ColBERT 스코어 계산 (token-level MaxSim)"""
+        """ColBERT 스코어 계산"""
         scores = []
+        query_vecs = query_vecs.astype(np.float32)
         
         for passage_vecs in passage_vecs_list:
-            # query_vecs: (q_len, dim)
-            # passage_vecs: (p_len, dim)
-            # MaxSim: for each query token, find max similarity with passage tokens
-            similarity_matrix = np.dot(query_vecs, passage_vecs.T)  # (q_len, p_len)
-            max_sims = similarity_matrix.max(axis=1)  # (q_len,)
-            score = max_sims.sum()  # ColBERT score
+            passage_vecs = passage_vecs.astype(np.float32)
+            similarity_matrix = np.dot(query_vecs, passage_vecs.T)
+            max_sims = similarity_matrix.max(axis=1)
+            score = max_sims.sum()
             scores.append(score)
         
         return np.array(scores)
@@ -233,19 +290,24 @@ class BGEM3Retrieval:
         self, 
         query: str, 
         k: int = 1,
-        weights: Optional[dict] = None
+        weights: Optional[dict] = None,
+        use_rerank: bool = None,
+        rerank_top_k: int = 100,
     ):
         """
-        단일 쿼리 검색
+        단일 쿼리 검색 with Re-ranking
         
         Args:
             query: 검색 쿼리
-            k: 반환할 문서 수
-            weights: 각 방법의 가중치 {'dense': 0.5, 'sparse': 0.3, 'colbert': 0.2}
-                    None이면 사용하는 방법만으로 균등 분배
+            k: 최종 반환할 문서 수
+            weights: 각 방법의 가중치
+            use_rerank: Re-ranker 사용 여부 (None이면 self.use_reranker 따름)
+            rerank_top_k: Re-ranking할 후보 수 (메모리 고려하여 조정)
         """
+        if use_rerank is None:
+            use_rerank = self.use_reranker and self.reranker is not None
+
         if weights is None:
-            # 기본 가중치: 사용하는 방법들에 균등 분배
             num_methods = sum([self.use_dense, self.use_sparse, self.use_colbert])
             default_weight = 1.0 / num_methods
             weights = {
@@ -261,48 +323,89 @@ class BGEM3Retrieval:
         final_scores = np.zeros(len(self.contexts))
 
         if self.use_dense and weights['dense'] > 0:
-            query_dense = query_result['dense_vecs']  # (1, dim)
+            query_dense = query_result['dense_vecs']
             dense_scores = self._compute_dense_score(query_dense, self.dense_embeddings)
-            # 정규화 (0-1)
             if dense_scores.max() > dense_scores.min():
                 dense_scores = (dense_scores - dense_scores.min()) / (dense_scores.max() - dense_scores.min())
             final_scores += weights['dense'] * dense_scores
 
         if self.use_sparse and weights['sparse'] > 0:
-            query_sparse = query_result['lexical_weights'][0]  # dict
+            query_sparse = query_result['lexical_weights'][0]
             sparse_scores = self._compute_sparse_score(query_sparse, self.sparse_embeddings)
-            # 정규화
             if sparse_scores.max() > sparse_scores.min():
                 sparse_scores = (sparse_scores - sparse_scores.min()) / (sparse_scores.max() - sparse_scores.min())
             final_scores += weights['sparse'] * sparse_scores
 
         if self.use_colbert and weights['colbert'] > 0:
-            query_colbert = query_result['colbert_vecs'][0]  # (q_len, dim)
+            query_colbert = query_result['colbert_vecs'][0]
             colbert_scores = self._compute_colbert_score(query_colbert, self.colbert_embeddings)
-            # 정규화
             if colbert_scores.max() > colbert_scores.min():
                 colbert_scores = (colbert_scores - colbert_scores.min()) / (colbert_scores.max() - colbert_scores.min())
             final_scores += weights['colbert'] * colbert_scores
 
-        # Top-k 추출
-        top_indices = np.argsort(final_scores)[::-1][:k]
+        # Stage 1: Initial retrieval
+        initial_k = rerank_top_k if use_rerank else k
+        top_indices = np.argsort(final_scores)[::-1][:initial_k]
         top_scores = final_scores[top_indices]
 
-        return top_scores.tolist(), top_indices.tolist()
+        # Stage 2: Re-ranking (선택적)
+        if use_rerank and len(top_indices) > k:
+            candidates = [self.contexts[i] for i in top_indices]
+            pairs = [[query, doc] for doc in candidates]
+            
+            # 배치 크기 조정 (메모리 효율)
+            rerank_batch_size = min(16, len(pairs))
+            
+            try:
+                rerank_scores = self.reranker.compute_score(
+                    pairs,
+                    batch_size=rerank_batch_size,
+                    max_length=512,
+                )
+                
+                # Re-rank된 순서로 재정렬
+                rerank_indices = np.argsort(rerank_scores)[::-1][:k]
+                final_indices = top_indices[rerank_indices]
+                final_scores_output = [rerank_scores[i] for i in rerank_indices]
+                
+                self._clear_memory()
+                
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    print("⚠️ Re-ranking OOM, using initial scores")
+                    self._clear_memory()
+                    final_indices = top_indices[:k]
+                    final_scores_output = top_scores[:k].tolist()
+                else:
+                    raise e
+        else:
+            final_indices = top_indices[:k]
+            final_scores_output = top_scores[:k].tolist()
+
+        return final_scores_output, final_indices.tolist()
 
     def get_relevant_doc_bulk(
         self, 
         queries: List[str], 
         k: int = 1,
-        weights: Optional[dict] = None
+        weights: Optional[dict] = None,
+        use_rerank: bool = None,
+        rerank_top_k: int = 100,
     ):
-        """배치 쿼리 검색"""
+        """배치 쿼리 검색 with progressive memory clearing"""
         doc_scores, doc_indices = [], []
 
-        for query in tqdm(queries, desc="Retrieving"):
-            scores, indices = self.get_relevant_doc(query, k=k, weights=weights)
+        for i, query in enumerate(tqdm(queries, desc="Retrieving")):
+            scores, indices = self.get_relevant_doc(
+                query, k=k, weights=weights,
+                use_rerank=use_rerank, rerank_top_k=rerank_top_k
+            )
             doc_scores.append(scores)
             doc_indices.append(indices)
+            
+            # 주기적 메모리 정리
+            if (i + 1) % 50 == 0:
+                self._clear_memory()
 
         return doc_scores, doc_indices
 
@@ -310,20 +413,25 @@ class BGEM3Retrieval:
         self, 
         query_or_dataset: Union[str, Dataset], 
         topk: int = 100,
-        weights: Optional[dict] = None
+        weights: Optional[dict] = None,
+        use_rerank: bool = None,
+        rerank_top_k: int = 100,
     ):
         """
-        검색 실행
+        검색 실행 with Re-ranking
         
         Args:
             query_or_dataset: 단일 쿼리 또는 Dataset
             topk: 반환할 문서 수
             weights: {'dense': 0.5, 'sparse': 0.5, 'colbert': 0.0}
+            use_rerank: Re-ranker 사용 여부
+            rerank_top_k: Re-ranking 전 후보 수 (topk보다 커야 함)
         """
         # 단일 쿼리
         if isinstance(query_or_dataset, str):
             scores, indices = self.get_relevant_doc(
-                query_or_dataset, k=topk, weights=weights
+                query_or_dataset, k=topk, weights=weights,
+                use_rerank=use_rerank, rerank_top_k=rerank_top_k
             )
             passages = [self.contexts[i] for i in indices]
             return scores, passages
@@ -333,7 +441,8 @@ class BGEM3Retrieval:
 
         with timer(f"Retrieving for {len(dataset)} queries"):
             doc_scores, doc_indices = self.get_relevant_doc_bulk(
-                dataset["question"], k=topk, weights=weights
+                dataset["question"], k=topk, weights=weights,
+                use_rerank=use_rerank, rerank_top_k=rerank_top_k
             )
 
         # DataFrame 생성
@@ -360,19 +469,50 @@ class BGEM3Retrieval:
 
         return pd.DataFrame(rows)
 
+    def generate_hard_negatives(
+        self,
+        query: str,
+        positive_doc_id: int,
+        k: int = 10,
+        weights: Optional[dict] = None,
+    ):
+        """
+        Hard negative sampling
+        
+        Args:
+            query: 쿼리
+            positive_doc_id: Positive 문서의 인덱스
+            k: 생성할 hard negative 수
+            weights: 검색 가중치
+            
+        Returns:
+            hard_negative_ids: Hard negative 문서 인덱스 리스트
+        """
+        # Top-k 검색 (positive 제외하고 k+1개 가져오기)
+        _, indices = self.get_relevant_doc(
+            query, k=k+20, weights=weights, use_rerank=False
+        )
+        
+        # Positive 제외하고 상위 k개 선택
+        hard_negatives = [idx for idx in indices if idx != positive_doc_id][:k]
+        
+        return hard_negatives
 
-# 간단한 테스트
+
+# 테스트 코드
 if __name__ == "__main__":
-    print("Testing BGE-M3 Retrieval...")
+    print("Testing Optimized BGE-M3 Retrieval with Re-ranker...")
     
-    retriever = BGEM3Retrieval(
+    retriever = BGEM3RetrievalOptimized(
         data_path="data",
         context_path="wikipedia_documents.json",
         use_dense=True,
         use_sparse=True,
         use_colbert=False,  # 메모리 절약
-        batch_size=12,
+        use_reranker=True,  # Re-ranker 활성화
+        batch_size=8,
         max_length=512,
+        max_memory_gb=28.0,
     )
     
     retriever.get_embeddings()
@@ -381,12 +521,25 @@ if __name__ == "__main__":
     test_query = "대한민국의 수도는?"
     scores, passages = retriever.retrieve(
         test_query, 
-        topk=3,
-        weights={'dense': 0.5, 'sparse': 0.5, 'colbert': 0.0}
+        topk=5,
+        weights={'dense': 0.5, 'sparse': 0.5, 'colbert': 0.0},
+        use_rerank=True,
+        rerank_top_k=20,  # 20개 후보 중 5개 선택
     )
     
     print(f"\nTest Query: {test_query}")
-    print(f"\nTop-3 Results:")
+    print(f"\nTop-5 Results (with Re-ranking):")
     for i, (score, passage) in enumerate(zip(scores, passages), 1):
         print(f"\n[{i}] Score: {score:.4f}")
         print(f"    Context: {passage[:150]}...")
+    
+    # Hard negative 테스트
+    print("\n" + "="*50)
+    print("Testing Hard Negative Sampling:")
+    hard_negs = retriever.generate_hard_negatives(
+        query=test_query,
+        positive_doc_id=0,  # 예시
+        k=5,
+        weights={'dense': 0.5, 'sparse': 0.5, 'colbert': 0.0}
+    )
+    print(f"Hard negative IDs: {hard_negs}")

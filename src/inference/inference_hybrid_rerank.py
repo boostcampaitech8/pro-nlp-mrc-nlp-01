@@ -32,6 +32,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 from src.config.arguments import DataTrainingArguments, ModelArguments
 from src.retrieval.retrieval_bm25_wandb import BM25RetrievalWithMetrics
 from src.retrieval.retrieval_dpr import DenseRetrieval
+from src.retrieval.reranker import CrossEncoderReranker
 from src.training.trainer_qa import QuestionAnsweringTrainer
 from src.utils.utils_qa import postprocess_qa_predictions
 
@@ -45,6 +46,8 @@ def main():
     # Custom args for this script
     parser.add_argument("--alpha", type=float, default=0.5, help="Weight for BM25 (0.0-1.0)")
     parser.add_argument("--top_k_rerank", type=int, default=40, help="Number of documents to rerank (expand)")
+    parser.add_argument("--use_reranker", action="store_true", help="Enable Cross-encoder reranking")
+    parser.add_argument("--reranker_model", type=str, default="upskyy/ko-reranker", help="Reranker model name")
 
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         model_args, data_args, training_args, custom_args = parser.parse_json_file(
@@ -56,11 +59,16 @@ def main():
         custom_args_namespace = outputs[3]
         alpha = custom_args_namespace.alpha
         top_k_rerank = custom_args_namespace.top_k_rerank
+        use_reranker = custom_args_namespace.use_reranker
+        reranker_model = custom_args_namespace.reranker_model
 
     print(f"Model: {model_args.model_name_or_path}")
     print(f"Data: {data_args.dataset_name}")
     print(f"Hybrid Alpha: {alpha}")
     print(f"Top-K Rerank: {top_k_rerank}")
+    print(f"Use Reranker: {use_reranker}")
+    if use_reranker:
+        print(f"Reranker Model: {reranker_model}")
 
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
@@ -89,7 +97,9 @@ def main():
             data_args,
             model_args,
             alpha=alpha,
-            top_k=top_k_rerank
+            top_k=top_k_rerank,
+            use_reranker=use_reranker,
+            reranker_model=reranker_model,
         )
 
     # 2. Run MRC (Reader) on Expanded Dataset
@@ -106,6 +116,8 @@ def run_hybrid_retrieval_expand(
     top_k: int = 40,
     data_path: str = "./data",
     context_path: str = "wikipedia_documents.json",
+    use_reranker: bool = False,
+    reranker_model: str = "upskyy/ko-reranker",
 ) -> DatasetDict:
     
     # Initialize Retrievers
@@ -117,6 +129,15 @@ def run_hybrid_retrieval_expand(
     dpr = DenseRetrieval(training_args, None, dpr_path, data_path=data_path, context_path=context_path)
     dpr.get_dense_embedding()
     dpr.build_faiss()
+    
+    # Initialize Cross-encoder Reranker (optional)
+    reranker = None
+    if use_reranker:
+        print(f"Initializing Cross-encoder Reranker: {reranker_model}")
+        reranker = CrossEncoderReranker(
+            model_name=reranker_model,
+            cache_dir="/data/ephemeral/models/reranker",
+        )
     
     target_split = "validation" if "validation" in datasets else "test"
     dataset = datasets[target_split]
@@ -162,7 +183,25 @@ def run_hybrid_retrieval_expand(
             hybrid_scores.append((idx, score))
         
         hybrid_scores.sort(key=lambda x: x[1], reverse=True)
-        top_candidates = hybrid_scores[:top_k]
+        
+        # Cross-encoder Reranking (if enabled)
+        if reranker is not None:
+            # Rerank top candidates
+            rerank_pool_size = min(top_k * 3, len(hybrid_scores))
+            rerank_candidates = hybrid_scores[:rerank_pool_size]
+            candidate_indices = [x[0] for x in rerank_candidates]
+            candidate_passages = [contexts[idx] for idx in candidate_indices]
+            
+            # Apply cross-encoder reranking
+            reranked_indices, reranked_scores = reranker.rerank_with_indices(
+                query=query,
+                passages=candidate_passages,
+                original_indices=candidate_indices,
+                top_k=top_k,
+            )
+            top_candidates = list(zip(reranked_indices, reranked_scores))
+        else:
+            top_candidates = hybrid_scores[:top_k]
         
         # Create Expanded Examples
         # Logic: For 1 Question, we make K examples.
