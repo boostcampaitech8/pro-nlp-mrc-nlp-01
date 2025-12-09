@@ -4,7 +4,7 @@
 실행 예시:
 
 # Dense + Sparse + Re-ranker (추천, 메모리 효율)
-python -m src.inference.inference_bge_m3_optimized \
+python -m src.inference.inference_bge_m3 \
   --output_dir outputs/eval_bge_m3_rerank_k10/ \
   --dataset_name data/train_dataset/ \
   --model_name_or_path models/train_dataset/ \
@@ -17,7 +17,7 @@ python -m src.inference.inference_bge_m3_optimized \
   --use_wandb True
 
 # ColBERT 포함 (메모리 충분할 때)
-python -m src.inference.inference_bge_m3_optimized \
+python -m src.inference.inference_bge_m3 \
   --output_dir outputs/eval_bge_m3_full_k10/ \
   --dataset_name data/train_dataset/ \
   --model_name_or_path models/train_dataset/ \
@@ -61,7 +61,7 @@ from datasets import (
     Value,
     load_from_disk,
 )
-from .retrieval_bge_m3_optimized import BGEM3RetrievalOptimized
+from ..retrieval.retrieval_bge_m3 import BGEM3RetrievalOptimized
 from ..training import QuestionAnsweringTrainer
 from transformers import (
     AutoConfig,

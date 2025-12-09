@@ -100,3 +100,13 @@ class DataTrainingArguments:
     context_file: str = field(
         default="wikipedia_documents.json", metadata={"help": "Path to context file"}
     )
+
+    bge_use_reranker: bool = field(
+        default=False, metadata={"help": "Use BGE reranker after retrieval"}
+    )
+    bge_rerank_top_k: int = field(
+        default=30, metadata={"help": "Number of top passages to keep after reranking"}
+    )
+    bge_batch_size: int = field(
+        default=8, metadata={"help": "Batch size for reranking"}
+    )
