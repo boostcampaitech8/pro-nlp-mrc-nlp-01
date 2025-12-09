@@ -1,5 +1,5 @@
 """
-Hybrid Retrieval using BM25 + KURE (Dense) + Cross-encoder Reranker
+Hybrid Reieval using BM25 + KURE (Dense) + Cross-encoder Reranker
 """
 import os
 import json
@@ -90,7 +90,11 @@ class HybridKURERetrieval:
             pd.DataFrame: 검색 결과
             Dict: 평가 메트릭 (ground truth가 있는 경우)
         """
-        search_k = topk * 3  # 더 많은 후보에서 선택
+        if self.use_reranker:
+            # Reranker 사용 시, 200개 pool을 채우기 위해 충분히 많이 가져옵니다. (Top-200 실험 때 1.0이 나왔던 설정인 600개 사용)
+            search_k = max(topk * 3, 600)
+        else:
+            search_k = topk * 3
         
         if isinstance(query_or_dataset, str):
             queries = [query_or_dataset]
@@ -119,6 +123,8 @@ class HybridKURERetrieval:
         # Rerank 후 메트릭
         post_rerank_correct = 0
         post_rerank_mrr = 0.0
+        # Candidate Pool 메트릭
+        candidate_pool_correct = 0
         
         has_ground_truth = not is_single and "context" in query_or_dataset.features
         
@@ -200,10 +206,21 @@ class HybridKURERetrieval:
                         kure_mrr += 1.0 / (rank + 1)
                         break
             
+            rerank_candidate_k = 0 # 초기화
+            
             # Reranking 단계 (활성화된 경우)
             if self.use_reranker and self.reranker is not None:
-                # Hybrid에서 topk * 3개 후보 선정
-                rerank_candidates = hybrid_scores[:topk * 3]
+                # 1차 검색 결과에서 충분한 후보군 확보 (최소 200개 또는 topk * 3 중 큰 값)
+                rerank_candidate_k = max(200, topk * 3)
+                rerank_candidates = hybrid_scores[:rerank_candidate_k]
+                
+                # Candidate Pool Recall 계산 (Reranker가 볼 후보군에 정답이 있는지)
+                if has_ground_truth:
+                     pool_indices = [x[0] for x in rerank_candidates]
+                     pool_contexts = [self.contexts[pid] for pid in pool_indices]
+                     if any(original_context in rc or rc in original_context for rc in pool_contexts):
+                         candidate_pool_correct += 1
+
                 candidate_indices = [x[0] for x in rerank_candidates]
                 candidate_passages = [self.contexts[idx] for idx in candidate_indices]
                 
@@ -212,7 +229,7 @@ class HybridKURERetrieval:
                     query=query,
                     passages=candidate_passages,
                     original_indices=candidate_indices,
-                    top_k=topk,
+                    top_k=topk, # 최종적으로 Reader에게 넘길 개수는 topk
                 )
                 top_indices, top_scores = reranked
             else:
@@ -261,6 +278,9 @@ class HybridKURERetrieval:
             pre_acc = pre_rerank_correct / n
             pre_mrr = pre_rerank_mrr / n
             
+            # Candidate Pool 메트릭
+            pool_acc = candidate_pool_correct / n if self.use_reranker else 0.0
+
             # Rerank 후 메트릭
             post_acc = post_rerank_correct / n
             post_mrr = post_rerank_mrr / n
@@ -270,6 +290,8 @@ class HybridKURERetrieval:
                 "kure_mrr": kure_mrr_val,
                 "pre_rerank_accuracy": pre_acc,
                 "pre_rerank_mrr": pre_mrr,
+                "candidate_pool_accuracy": pool_acc,
+                "candidate_pool_size": rerank_candidate_k if self.use_reranker else 0,
                 "post_rerank_accuracy": post_acc,
                 "post_rerank_mrr": post_mrr,
                 "accuracy_improvement": post_acc - pre_acc,
@@ -285,9 +307,9 @@ class HybridKURERetrieval:
             print(f"[KURE Only]     Accuracy: {kure_acc:.4f}, MRR: {kure_mrr_val:.4f}")
             print(f"[Before Rerank] Accuracy: {pre_acc:.4f}, MRR: {pre_mrr:.4f}")
             if self.use_reranker:
+                print(f"[Candidate Pool] Accuracy: {pool_acc:.4f} (Size: {rerank_candidate_k})")
                 print(f"[After Rerank]  Accuracy: {post_acc:.4f}, MRR: {post_mrr:.4f}")
                 print(f"[Improvement]   Accuracy: {post_acc - pre_acc:+.4f}, MRR: {post_mrr - pre_mrr:+.4f}")
             print(f"{'='*50}")
             
         return pd.DataFrame(total), metrics
-

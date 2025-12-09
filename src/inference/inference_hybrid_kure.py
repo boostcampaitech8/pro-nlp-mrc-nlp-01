@@ -223,6 +223,10 @@ def main():
                 "retrieval/accuracy_improvement": retrieval_metrics.get("accuracy_improvement"),
                 "retrieval/mrr_improvement": retrieval_metrics.get("mrr_improvement"),
                 "retrieval/correct_count": retrieval_metrics.get("correct_count"),
+                
+                # Debug: Candidate Pool Stats
+                "retrieval/candidate_pool_accuracy": retrieval_metrics.get("candidate_pool_accuracy"),
+                "retrieval/candidate_pool_size": retrieval_metrics.get("candidate_pool_size"),
             })
             print(f"[Wandb] Logged retrieval metrics: {retrieval_metrics}")
 
