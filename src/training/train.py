@@ -272,6 +272,8 @@ def run_mrc(
             predictions=predictions,
             max_answer_length=data_args.max_answer_length,
             output_dir=training_args.output_dir,
+            version_2_with_negative=True,  # <--- [핵심] 이 옵션이 있어야 빈 문자열("")을 뱉습니다.
+            null_score_diff_threshold=0.0, # [선택] 답 없음으로 판단할 기준점 (기본 0.0)
         )
         formatted_preds = []
         for prediction_id, prediction_text in processed_preds.items():
@@ -282,13 +284,44 @@ def run_mrc(
             return formatted_preds
 
         elif is_evaluating:
-            ref_list = []
+            ref_list = []         # 정답지 (References) - 기존 변수명 유지
+            final_preds = []      # 예측값 (Predictions) - 짝을 맞추기 위해 새로 정의
+
             for val_example in datasets["validation"]:
-                # ref_list.append({"id": val_example["id"], "answers": val_example[ans_col]})
-                # [수정] 정답이 있는 경우(Positive)만 평가 데이터에 포함시킨다.
-                # SQuAD v1 Metric이 빈 정답 리스트를 처리하지 못하는 오류 방지
-                if len(val_example[answer_col]["text"]) > 0:
-                    ref_list.append({"id": val_example["id"], "answers": val_example[answer_col]})
+                
+                # -----------------------------------------------------------
+                # 1. 예측값 (Prediction) 담기
+                # -----------------------------------------------------------
+                # 기존 processed_preds 딕셔너리에서 ID에 맞는 예측 텍스트를 가져옵니다.
+                pred_text = processed_preds.get(val_example["id"], "")
+                
+                final_preds.append({
+                    "id": val_example["id"], 
+                    "prediction_text": pred_text
+                })
+
+                # -----------------------------------------------------------
+                # 2. 정답지 (Reference) 담기 (로직 수정됨)
+                # -----------------------------------------------------------
+                # 기존 변수명(val_example[ans_col]) 활용
+                original_answers = val_example[ans_col]
+
+                # [수정] 정답 리스트가 비어있는 경우(Negative) 처리
+                # 그냥 넘기면 max() 에러가 나므로, [""](빈 문자열)이 정답인 것으로 변환
+                if len(original_answers["text"]) == 0:
+                    formatted_answers = {
+                        "text": [""],        # "정답은 빈 문자열이다"
+                        "answer_start": [-1] # 형식 유지를 위한 더미 값
+                    }
+                else:
+                    # 정답이 있는 경우(Positive)는 원본 그대로 사용
+                    formatted_answers = original_answers
+                
+                # 기존 변수명(ref_list)에 추가
+                ref_list.append({
+                    "id": val_example["id"], 
+                    "answers": formatted_answers
+                })
             return EvalPrediction(
                 predictions=formatted_preds, label_ids=ref_list
             )

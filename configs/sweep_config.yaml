@@ -53,7 +53,8 @@ parameters:
   do_eval:
     value: true
   
-  evaluation_strategy:
+  # evaluation_strategy:
+  eval_strategy:
     value: "epoch"  # 또는 "steps"
   
   save_strategy:

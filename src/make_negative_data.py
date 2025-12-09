@@ -36,7 +36,7 @@ def augment_split(
     dataset: Dataset,
     retriever: SparseRetrieval,
     k_retrieval: int = 20,
-    target_negatives: int = 4
+    target_negatives: int = 2
 ) -> Dataset:
     print(f"[{split_name}] Processing {len(dataset)} samples...")
     
