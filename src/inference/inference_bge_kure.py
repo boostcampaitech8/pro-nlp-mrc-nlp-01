@@ -3,30 +3,48 @@ KURE-v1 Dense + BGE-M3 Sparse + BGE-Reranker Hybrid Retrieval + MRC Inference
 기존 inference_bge_m3_fixed.py 와 100% 동일한 플로우를 유지한 Hybrid 버전
 
 python -m src.inference.inference_bge_kure \
-  --output_dir outputs/eval_bge_kure_k10/ \
+  --output_dir outputs/eval_bge_kure_k100_rk5/ \
   --dataset_name data/train_dataset/ \
   --model_name_or_path models/train_dataset/ \
   --do_eval \
   --eval_retrieval \
-  --top_k_retrieval 10 \
-  --bge_use_reranker False \
-  --bge_rerank_top_k 50 \
+  --top_k_retrieval 100 \
+  --bge_use_reranker True \
+  --bge_rerank_top_k 5 \
   --use_wandb True \
   --wandb_project "retrieval"
 
-python -m src.inference.inference_bge_m3_kure \
-  --output_dir outputs/pred_bge_kure_k100_pred/ \
+python -m src.inference.inference_bge_kure \
+  --output_dir outputs/debug_bge_kure_k100_rk_5_pred/ \
   --overwrite_output_dir True \
-  --dataset_name data/train_dataset/ \
+  --dataset_name data/test_dataset/ \
   --model_name_or_path models/train_dataset/ \
   --do_predict \
   --eval_retrieval \
   --top_k_retrieval 100 \
   --bge_use_reranker True \
-  --bge_rerank_top_k 50 \
-  --use_wandb True \
+  --bge_rerank_top_k 5 \
+  --use_wandb False \
   --wandb_project "retrieval"
 
+
+python -m scripts.hn_mining_kure \
+    --dataset_name data/train_dataset \
+    --output_path data/train_with_hard_negatives.json \
+    --kure_model_path nlpai-lab/KURE-v1 \
+    --num_hard_negatives 5 \
+    --num_candidates 100 \
+    --use_bm25 True \
+    --use_current_model True
+
+python -m training.train_hn_kure \
+    --train_data data/train_with_hard_negatives.json \
+    --output_dir models/kure_finetuned_hard_neg \
+    --model_name nlpai-lab/KURE-v1 \
+    --batch_size 16 \
+    --num_epochs 3 \
+    --learning_rate 2e-5 \
+    --temperature 0.05
 """
 
 import logging
@@ -266,10 +284,10 @@ def run_kure_bge_retrieval(
         retrieved_df = retrieved_df.drop(columns=["original_context"])
 
     if training_args.do_predict:
-    drop_cols = ["answers", "original_context"]
-    for col in drop_cols:
-        if col in retrieved_df.columns:
-            retrieved_df = retrieved_df.drop(columns=[col])
+        drop_cols = ["answers", "original_context"]
+        for col in drop_cols:
+            if col in retrieved_df.columns:
+                retrieved_df = retrieved_df.drop(columns=[col])
 
     # Dataset Features
     if training_args.do_predict:

@@ -330,7 +330,8 @@ class BGEM3KUREHybridRetrieval:
             final_idx = top_init[:k]
             final_scores_out = final_scores[final_idx].tolist()
 
-        return final_scores_out, final_idx.tolist()
+        return final_scores_out, list(final_idx)
+
 
 
     ######################################
@@ -359,7 +360,7 @@ class BGEM3KUREHybridRetrieval:
 
 
     ######################################
-    # Full dataset retrieval (same format)
+    # Full dataset retrieval (수정됨)
     ######################################
 
     def retrieve(
@@ -381,13 +382,14 @@ class BGEM3KUREHybridRetrieval:
                 rerank_top_k=rerank_top_k
             )
 
+            # ✅ 여러 context를 하나로 합침
+            retrieved_context = " ".join([self.contexts[i] for i in idxs])
+
             rows = [{
                 "id": "0",
                 "question": query_or_dataset,
-                "context": self.contexts[i],
-                "retrieval_rank": rank,
-                "retrieval_score": float(sc),
-            } for rank, (i, sc) in enumerate(zip(idxs, scores))]
+                "context": retrieved_context,  # ✅ 합쳐진 context
+            }]
 
             return pd.DataFrame(rows), {}
 
@@ -404,7 +406,7 @@ class BGEM3KUREHybridRetrieval:
                 rerank_top_k=rerank_top_k
             )
 
-        # Create rows
+        # Create rows - ✅ 각 질문당 1개 row만 생성
         rows = []
         has_gt = "context" in dataset.features
 
@@ -415,35 +417,33 @@ class BGEM3KUREHybridRetrieval:
         for i, ex in enumerate(dataset):
             qid = ex["id"]
             qtext = ex["question"]
-
             original_context = ex.get("context") if has_gt else None
 
-            found = False
+            # ✅ 여러 context를 하나로 합침
+            retrieved_contexts = [self.contexts[idx] for idx in doc_indices[i]]
+            retrieved_context = " ".join(retrieved_contexts)
 
-            for rank, (idx, score) in enumerate(zip(doc_indices[i], doc_scores[i])):
-                ctx = self.contexts[idx]
+            row = {
+                "id": qid,
+                "question": qtext,
+                "context": retrieved_context,  # ✅ 합쳐진 context
+            }
 
-                row = {
-                    "id": qid,
-                    "question": qtext,
-                    "context": ctx,
-                    "retrieval_rank": rank,
-                    "retrieval_score": float(score),
-                }
-
-                if has_gt and rank == 0:
-                    row["original_context"] = original_context
-
-                if has_gt and not found and original_context:
+            # Accuracy & MRR 계산
+            if has_gt and original_context:
+                found = False
+                for rank, ctx in enumerate(retrieved_contexts):
                     if original_context in ctx or ctx in original_context:
-                        correct += 1
-                        mrr += 1.0 / (rank + 1)
-                        found = True
+                        if not found:
+                            correct += 1
+                            mrr += 1.0 / (rank + 1)
+                            found = True
+                        break
 
-                if "answers" in ex:
-                    row["answers"] = ex["answers"]
+            if "answers" in ex:
+                row["answers"] = ex["answers"]
 
-                rows.append(row)
+            rows.append(row)  # ✅ 1개 row만 추가
 
         metrics = {}
         if has_gt:
