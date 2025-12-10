@@ -164,6 +164,21 @@ def main():
         gen_ids = output[0][input_len:]
         pred_answer = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
 
+        # 1. 특수문자 제거 (정답 앞뒤의 마침표, 따옴표 등)
+        pred_answer = pred_answer.strip(".,;\"'?!")
+
+        # 2. 한국어 조사/어미 강제 제거 (정답이 2글자 이상일 때만 적용)
+        if len(pred_answer) > 1:
+            import re
+            # 은/는/이/가/을/를/의/에/로/으로 + 이다/했다/했습니다 등 서술어미 제거
+            pred_answer = re.sub(r'(은|는|이|가|을|를|의|에|로|으로|와|과|이다|였다|했습니다|합니다)$', '', pred_answer)
+
+        # 3. '알수없음' 텍스트 정규화
+        if "알수없음" in pred_answer or "찾을 수 없" in pred_answer:
+            pred_answer = "알수없음"
+
+        # ▲▲▲▲▲ [여기까지] 추가하면 됩니다 ▲▲▲▲▲
+
         em, f1 = compute_em_f1(pred_answer, gold_answer)
         total_em += em
         total_f1 += f1
