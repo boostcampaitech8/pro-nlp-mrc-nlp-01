@@ -3,7 +3,8 @@ Cross-encoder 기반 Reranker 모듈
 
 한국어 MRC를 위한 SOTA reranking 기능을 제공합니다.
 지원 모델:
-- upskyy/ko-reranker (한국어 특화, 권장)
+- dragonkue/bge-reranker-v2-m3-ko (한국어 fine-tuned, 권장)
+- upskyy/ko-reranker (한국어 특화)
 - BAAI/bge-reranker-v2-m3 (다국어)
 """
 
@@ -24,7 +25,7 @@ class CrossEncoderReranker:
     
     def __init__(
         self,
-        model_name: str = "upskyy/ko-reranker",
+        model_name: str = "dragonkue/bge-reranker-v2-m3-ko",
         device: Optional[str] = None,
         max_length: int = 512,
         batch_size: int = 32,
@@ -290,7 +291,7 @@ class CrossEncoderReranker:
 
 
 def get_reranker(
-    model_name: str = "upskyy/ko-reranker",
+    model_name: str = "dragonkue/bge-reranker-v2-m3-ko",
     **kwargs,
 ) -> CrossEncoderReranker:
     """
@@ -298,9 +299,9 @@ def get_reranker(
     
     Args:
         model_name: 사용할 모델
-            - "upskyy/ko-reranker": 한국어 특화 (권장)
+            - "dragonkue/bge-reranker-v2-m3-ko": 한국어 fine-tuned (권장)
+            - "upskyy/ko-reranker": 한국어 특화
             - "BAAI/bge-reranker-v2-m3": 다국어
-            - "BAAI/bge-reranker-large": 영어 중심
         **kwargs: CrossEncoderReranker 추가 인자
     
     Returns:
@@ -313,7 +314,7 @@ if __name__ == "__main__":
     # 간단한 테스트
     print("Testing CrossEncoderReranker...")
     
-    reranker = get_reranker("upskyy/ko-reranker")
+    reranker = get_reranker("dragonkue/bge-reranker-v2-m3-ko")
     
     query = "한국의 수도는 어디인가?"
     passages = [

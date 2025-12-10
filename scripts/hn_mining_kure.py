@@ -67,7 +67,10 @@ class HardNegativeArguments:
         default=2,
         metadata={"help": "Additional random negatives"}
     )
-
+    use_current_model: bool = field(
+    default=True,
+    metadata={"help": "Use current dense model to mine negatives"}
+    )
 
 
 
@@ -116,7 +119,8 @@ class HybridHardNegativeMiner:
     # -------------------------------------------------------------
     def dense_candidates(self, query):
         scores, indices = self.retriever.get_relevant_doc(query, k=self.args.num_candidates)
-        return indices.tolist()
+        return list(indices)
+
 
     def bm25_candidates(self, query):
         tokens = query.split()
