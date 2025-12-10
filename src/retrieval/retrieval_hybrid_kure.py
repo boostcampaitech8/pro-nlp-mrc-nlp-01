@@ -16,6 +16,154 @@ from .retrieval_kure import KURERetrieval
 from .reranker import CrossEncoderReranker
 
 
+
+# Global variables for multiprocessing to share large data (contexts)
+global_contexts = None
+global_bm25_retriever = None
+
+def ensemble_wrapper(args):
+    """Wrapper for BM25 ensemble step"""
+    w_s, w_i, m_s, m_i, search_k, method, alpha = args
+    if global_bm25_retriever is None:
+        # Fallback if global not set (should not happen if properly initialized)
+        return [], []
+    
+    # We access the _ensemble_single method. It's static-like but defined as instance method.
+    # It doesn't use self except maybe for type hinting, let's check.
+    # It does not use self.
+    return global_bm25_retriever._ensemble_single(
+        w_s, w_i,
+        m_s, m_i,
+        search_k, method, alpha
+    )
+
+def fusion_wrapper(args):
+    """Wrapper for Hybrid Fusion & Candidate Selection step"""
+    (
+        b_scores, b_indices,
+        k_scores, k_indices,
+        alpha, topk, use_reranker,
+        query, query_idx, original_context, answers # Added answers
+    ) = args
+    
+    global global_contexts
+    
+    # buffers to return
+    local_rerank_pairs = []
+    local_rerank_meta = []
+    
+    # BM25 Normalization
+    if len(b_scores) > 0:
+        b_min, b_max = min(b_scores), max(b_scores)
+        b_norm = [1.0] * len(b_scores) if b_max == b_min else [(s - b_min) / (b_max - b_min) for s in b_scores]
+    else:
+        b_norm = []
+    b_map = {idx: score for idx, score in zip(b_indices, b_norm)}
+    
+    # KURE Normalization
+    if len(k_scores) > 0:
+        k_min, k_max = min(k_scores), max(k_scores)
+        k_norm = [1.0] * len(k_scores) if k_max == k_min else [(s - k_min) / (k_max - k_min) for s in k_scores]
+    else:
+        k_norm = []
+    k_map = {idx: score for idx, score in zip(k_indices, k_norm)}
+    
+    # Hybrid Fusion
+    all_indices = set(b_indices) | set(k_indices)
+    hybrid_scores = []
+    for idx in all_indices:
+        s_bm25 = b_map.get(idx, 0.0)
+        s_kure = k_map.get(idx, 0.0)
+        final_score = alpha * s_bm25 + (1 - alpha) * s_kure
+        hybrid_scores.append((idx, final_score))
+    hybrid_scores.sort(key=lambda x: x[1], reverse=True)
+    
+    # Pre-rerank Result (Top-K)
+    pre_rerank_indices = [x[0] for x in hybrid_scores[:topk]]
+    pre_rerank_scores = [x[1] for x in hybrid_scores[:topk]]
+    
+    # Reranking Candidate Collection
+    if use_reranker:
+        rerank_candidate_k = max(200, topk * 3)
+        current_candidates = hybrid_scores[:rerank_candidate_k] # [(idx, score), ...]
+        
+        # Add to local buffer
+        for idx, _ in current_candidates:
+            passage_text = global_contexts[idx]
+            local_rerank_pairs.append([query, passage_text])
+            local_rerank_meta.append({'query_idx': query_idx, 'passage_id': idx})
+            
+    # Metrics partial calculation can be done here or in main loop.
+    # To keep it simple and clean, we return necessary data for metric calc.
+    # But returning large context strings is expensive.
+    # We will return indices and let main loop do metric calc to avoid pickling overhead issues with strings if possible.
+    # But checking "original_context in context" requires text access.
+    # Since we have global_contexts here, we can compute correctness here!
+    
+    metrics_data = {
+        'pre_rerank_ids': pre_rerank_indices,
+        'kure_ids': [], # Fill below
+        'pool_ids': [x[0] for x in hybrid_scores[:max(200, topk * 3)]] if use_reranker else []
+    }
+    
+    # KURE Only Top-K
+    kure_scores_with_idx = []
+    for j, k_idx in enumerate(k_indices):
+        score = k_scores[j] if j < len(k_scores) else 0.0
+        kure_scores_with_idx.append((k_idx, score))
+    kure_scores_with_idx.sort(key=lambda x: x[1], reverse=True)
+    metrics_data['kure_ids'] = [x[0] for x in kure_scores_with_idx[:topk]]
+    
+    # To compute metrics, we need text check.
+    # We return boolean results to save space.
+    # is_correct check:
+    
+    res_metrics = {
+        'kure_correct': False,
+        'kure_rank': 0, # 0 means not found
+        'pre_correct': False,
+        'pre_rank': 0,
+        'pool_correct': False
+    }
+    
+    if original_context:
+        # KURE
+        kure_contexts = [global_contexts[pid] for pid in metrics_data['kure_ids']]
+        if any(original_context in rc or rc in original_context for rc in kure_contexts):
+            res_metrics['kure_correct'] = True
+        for rank, rc in enumerate(kure_contexts):
+            if original_context in rc or rc in original_context:
+                res_metrics['kure_rank'] = rank + 1
+                break
+                
+        # Pre-rerank
+        pre_contexts = [global_contexts[pid] for pid in metrics_data['pre_rerank_ids']]
+        if any(original_context in rc or rc in original_context for rc in pre_contexts):
+            res_metrics['pre_correct'] = True
+        for rank, rc in enumerate(pre_contexts):
+            if original_context in rc or rc in original_context:
+                res_metrics['pre_rank'] = rank + 1
+                break
+                
+        # Candidate Pool
+        if use_reranker:
+            pool_contexts = [global_contexts[pid] for pid in metrics_data['pool_ids']]
+            if any(original_context in rc or rc in original_context for rc in pool_contexts):
+                res_metrics['pool_correct'] = True
+                
+    result_struct = {
+        'id': None, # Filled by main
+        'query': query,
+        'pre_rerank_indices': pre_rerank_indices,
+        'pre_rerank_scores': pre_rerank_scores,
+        'original_context': original_context,
+        'local_rerank_pairs': local_rerank_pairs,
+        'local_rerank_meta': local_rerank_meta,
+        'metrics': res_metrics,
+        'answers': answers # Return answers
+    }
+    return result_struct
+
 class HybridKURERetrieval:
     """
     BM25(Ensemble) + KURE + Cross-encoder Reranker를 조합한 Hybrid Retrieval.
@@ -155,18 +303,36 @@ class HybridKURERetrieval:
         bm25_indices_list = []
         
         # Ensemble logic (Weighted Sum only for simplicity/speed or use wrapper)
-        # Implementing Weighted Sum here to match Ensemble Logic
-        print("  - Ensembling...")
-        for i in tqdm(range(len(queries)), desc="Ensembling BM25"):
-            f_scores, f_indices = self.bm25_retriever._ensemble_single(
-                w_scores[i], w_indices[i],
-                m_scores[i], m_indices[i],
-                search_k, # Our target search_k for Hybrid input
-                self.ensemble_method,
-                self.bm25_alpha
+        # Implementing Weighted Sum here using multiprocessing
+        print("  - Ensembling (Multiprocessing)...")
+        
+        # Set globals
+        global global_bm25_retriever
+        global_bm25_retriever = self.bm25_retriever
+        
+        from multiprocessing import Pool, cpu_count
+        
+        ensemble_args = []
+        for i in range(len(queries)):
+             ensemble_args.append((
+                 w_scores[i], w_indices[i],
+                 m_scores[i], m_indices[i],
+                 search_k, self.ensemble_method, self.bm25_alpha
+             ))
+             
+        with Pool(processes=cpu_count()) as pool:
+            results = list(
+                tqdm(
+                    pool.imap(ensemble_wrapper, ensemble_args),
+                    total=len(queries),
+                    desc="Ensembling BM25"
+                )
             )
-            bm25_scores_list.append(f_scores)
-            bm25_indices_list.append(f_indices)
+            
+        bm25_scores_list = [r[0] for r in results]
+        bm25_indices_list = [r[1] for r in results]
+        
+        global_bm25_retriever = None # Clear global ref
         
         # KURE Retrieval
         print("Retrieving with KURE...")
@@ -189,98 +355,56 @@ class HybridKURERetrieval:
         rerank_metadata_buffer = []    # [{'query_idx': int, 'passage_id': int}, ...]
         hybrid_results_buffer = [None] * len(queries)
         
-        # Phase 1: Hybrid Fusion & Candidate Selection
-        for i, query in tqdm(enumerate(queries), total=len(queries), desc="Hybrid Fusion & Selection"):
-            # BM25 Normalization
-            b_scores = bm25_scores_list[i]
-            b_indices = bm25_indices_list[i]
-            if len(b_scores) > 0:
-                b_min, b_max = min(b_scores), max(b_scores)
-                b_norm = [1.0] * len(b_scores) if b_max == b_min else [(s - b_min) / (b_max - b_min) for s in b_scores]
-            else:
-                b_norm = []
-            b_map = {idx: score for idx, score in zip(b_indices, b_norm)}
+        # Phase 1: Hybrid Fusion & Candidate Selection (Multiprocessing)
+        print("Hybrid Fusion & Selection (Multiprocessing)...")
+        
+        # Set globals
+        global global_contexts
+        global_contexts = self.contexts
+        
+        fusion_args = []
+        for i in range(len(queries)):
+            original_context = query_or_dataset[i]["context"] if has_ground_truth else None
+            answers = query_or_dataset[i]["answers"] if has_ground_truth else None # Capture answers
+            fusion_args.append((
+                bm25_scores_list[i], bm25_indices_list[i],
+                kure_scores_list[i], kure_indices_list[i],
+                alpha, topk, self.use_reranker,
+                queries[i], i, original_context, answers
+            ))
             
-            # KURE Normalization
-            k_scores = kure_scores_list[i]
-            k_indices = kure_indices_list[i]
-            if len(k_scores) > 0:
-                k_min, k_max = min(k_scores), max(k_scores)
-                k_norm = [1.0] * len(k_scores) if k_max == k_min else [(s - k_min) / (k_max - k_min) for s in k_scores]
-            else:
-                k_norm = []
-            k_map = {idx: score for idx, score in zip(k_indices, k_norm)}
+        with Pool(processes=cpu_count()) as pool:
+            fusion_results = list(
+                tqdm(
+                    pool.imap(fusion_wrapper, fusion_args),
+                    total=len(queries),
+                    desc="Hybrid Fusion"
+                )
+            )
             
-            # Hybrid Fusion
-            all_indices = set(b_indices) | set(k_indices)
-            hybrid_scores = []
-            for idx in all_indices:
-                s_bm25 = b_map.get(idx, 0.0)
-                s_kure = k_map.get(idx, 0.0)
-                final_score = alpha * s_bm25 + (1 - alpha) * s_kure
-                hybrid_scores.append((idx, final_score))
-            hybrid_scores.sort(key=lambda x: x[1], reverse=True)
+        global_contexts = None # Clear global
+        
+        # Aggregate Results
+        for i, res in enumerate(fusion_results):
+            # Aggregating Metrics
+            m = res['metrics']
+            if m['kure_correct']: kure_correct += 1
+            if m['kure_rank'] > 0: kure_mrr += 1.0 / m['kure_rank']
             
-            # Pre-rerank Result (Top-K)
-            pre_rerank_indices = [x[0] for x in hybrid_scores[:topk]]
+            if m['pre_correct']: pre_rerank_correct += 1
+            if m['pre_rank'] > 0: pre_rerank_mrr += 1.0 / m['pre_rank']
             
-            # KURE Only Result (for metrics)
-            kure_scores_with_idx = []
-            for j, k_idx in enumerate(k_indices):
-                score = k_scores[j] if j < len(k_scores) else 0.0
-                kure_scores_with_idx.append((k_idx, score))
-            kure_scores_with_idx.sort(key=lambda x: x[1], reverse=True)
-            kure_top_indices = [x[0] for x in kure_scores_with_idx[:topk]]
+            if m['pool_correct']: candidate_pool_correct += 1
             
-            original_context = None
-            if has_ground_truth:
-                original_context = query_or_dataset[i]["context"]
+            # Aggregating Buffers
+            if res['local_rerank_pairs']:
+                rerank_candidates_buffer.extend(res['local_rerank_pairs'])
+                rerank_metadata_buffer.extend(res['local_rerank_meta'])
+                candidate_pool_size_sum += len(res['local_rerank_pairs'])
                 
-                # Metrics: Hybrid (Pre-rerank)
-                pre_rerank_contexts = [self.contexts[pid] for pid in pre_rerank_indices]
-                if any(original_context in rc or rc in original_context for rc in pre_rerank_contexts):
-                    pre_rerank_correct += 1
-                for rank, rc in enumerate(pre_rerank_contexts):
-                    if original_context in rc or rc in original_context:
-                        pre_rerank_mrr += 1.0 / (rank + 1)
-                        break
-                        
-                # Metrics: KURE Only
-                kure_contexts = [self.contexts[pid] for pid in kure_top_indices]
-                if any(original_context in rc or rc in original_context for rc in kure_contexts):
-                    kure_correct += 1
-                for rank, rc in enumerate(kure_contexts):
-                    if original_context in rc or rc in original_context:
-                        kure_mrr += 1.0 / (rank + 1)
-                        break
-            
-            # Reranking Candidate Collection
-            current_rerank_candidates = []
-            if self.use_reranker and self.reranker is not None:
-                rerank_candidate_k = max(200, topk * 3)
-                current_candidates = hybrid_scores[:rerank_candidate_k] # [(idx, score), ...]
-                candidate_pool_size_sum += len(current_candidates)
-                
-                # Check Candidate Pool Recall
-                if has_ground_truth:
-                    pool_contexts = [self.contexts[x[0]] for x in current_candidates]
-                    if any(original_context in rc or rc in original_context for rc in pool_contexts):
-                        candidate_pool_correct += 1
-                
-                # Add to bulk buffer
-                for idx, _ in current_candidates:
-                    passage_text = self.contexts[idx]
-                    rerank_candidates_buffer.append([query, passage_text])
-                    rerank_metadata_buffer.append({'query_idx': i, 'passage_id': idx})
-            
-            # Store data for Phase 3
-            hybrid_results_buffer[i] = {
-                'id': query_or_dataset[i]["id"] if not is_single else "0",
-                'query': query,
-                'pre_rerank_indices': pre_rerank_indices,
-                'pre_rerank_scores': [x[1] for x in hybrid_scores[:topk]],
-                'original_context': original_context
-            }
+            # Store buffer
+            res['id'] = query_or_dataset[i]["id"] if not is_single else "0"
+            hybrid_results_buffer[i] = res
 
         # Phase 2: Bulk Reranking
         reranked_scores_map = {} # query_idx -> [(passage_id, score), ...]
@@ -290,7 +414,7 @@ class HybridKURERetrieval:
             # This is the key optimization: one massive batch inference instead of many
             flat_scores = self.reranker.score_pairs_bulk(
                 rerank_candidates_buffer, 
-                batch_size=256,  # Optimized batch size
+                batch_size=128,  # Optimized batch size
                 show_progress_bar=True
             )
             
@@ -329,6 +453,9 @@ class HybridKURERetrieval:
             }
             if res['original_context']:
                 tmp['original_context'] = res['original_context']
+            
+            if res.get('answers'):
+                tmp['answers'] = res['answers']
                 
                 # Post-rerank Metrics
                 retrieved_contexts_list = [self.contexts[pid] for pid in top_indices]

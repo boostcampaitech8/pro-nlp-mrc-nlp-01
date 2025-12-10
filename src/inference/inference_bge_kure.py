@@ -3,7 +3,8 @@ KURE-v1 Dense + BGE-M3 Sparse + BGE-Reranker Hybrid Retrieval + MRC Inference
 기존 inference_bge_m3_fixed.py 와 100% 동일한 플로우를 유지한 Hybrid 버전
 
 python -m src.inference.inference_bge_kure \
-  --output_dir outputs/eval_bge_kure_k100_rk5/ \
+  --output_dir outputs/hn_bge_kure_k100_rk_5_eval/ \
+  --overwrite_output_dir True \
   --dataset_name data/train_dataset/ \
   --model_name_or_path models/train_dataset/ \
   --do_eval \
@@ -11,21 +12,24 @@ python -m src.inference.inference_bge_kure \
   --top_k_retrieval 100 \
   --bge_use_reranker True \
   --bge_rerank_top_k 5 \
-  --use_wandb True \
+  --use_wandb True\
   --wandb_project "retrieval"
 
+
 python -m src.inference.inference_bge_kure \
-  --output_dir outputs/debug_bge_kure_k100_rk_5_pred/ \
+  --output_dir outputs/hn_bge_kure_k100_rk_5_pred/ \
   --overwrite_output_dir True \
   --dataset_name data/test_dataset/ \
   --model_name_or_path models/train_dataset/ \
+  --dense_embedding_path data/kure_models_kure_finetuned_encoder_embedding.bin \
+  --sparse_embedding_path data/bge_sparse.pkl \
   --do_predict \
   --eval_retrieval \
   --top_k_retrieval 100 \
   --bge_use_reranker True \
   --bge_rerank_top_k 5 \
-  --use_wandb False \
-  --wandb_project "retrieval"
+  --use_wandb False
+
 
 
 python -m scripts.hn_mining_kure \
@@ -37,11 +41,12 @@ python -m scripts.hn_mining_kure \
     --use_bm25 True \
     --use_current_model True
 
-python -m training.train_hn_kure \
+python -m src.training.train_hn_kure \
     --train_data data/train_with_hard_negatives.json \
     --output_dir models/kure_finetuned_hard_neg \
     --model_name nlpai-lab/KURE-v1 \
-    --batch_size 16 \
+    --batch_size 4 \
+    --max_length 256 \
     --num_epochs 3 \
     --learning_rate 2e-5 \
     --temperature 0.05
@@ -261,6 +266,9 @@ def run_kure_bge_retrieval(
         use_dense=config["use_dense"],
         use_sparse=config["use_sparse"],
         use_reranker=config["use_reranker"],
+        dense_embedding_path=data_args.dense_embedding_path,
+        sparse_embedding_path=data_args.sparse_embedding_path,
+
     )
 
     logger.info("Building or loading embeddings...")

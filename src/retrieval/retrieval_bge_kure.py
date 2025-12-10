@@ -39,7 +39,7 @@ class BGEM3KUREHybridRetrieval:
         sparse_model_name="BAAI/bge-m3",
 
         # Dense Encoder (KURE)
-        kure_model_name="nlpai-lab/KURE-v1",
+        kure_model_name="models/kure_finetuned_hard_neg/best",
 
         # Reranker
         reranker_name="BAAI/bge-reranker-v2-m3",
@@ -53,6 +53,9 @@ class BGEM3KUREHybridRetrieval:
         use_reranker=True,
 
         max_memory_gb=28.0,
+
+        dense_embedding_path=None,
+        sparse_embedding_path=None,
     ):
         self.data_path = data_path
         self.base_batch_size = batch_size
@@ -62,6 +65,10 @@ class BGEM3KUREHybridRetrieval:
         self.use_sparse = use_sparse
         self.use_reranker = use_reranker
         self.max_memory_gb = max_memory_gb
+
+        self.dense_embedding_path = dense_embedding_path
+        self.sparse_embedding_path = sparse_embedding_path
+
 
         # Wikipedia Documents
         with open(os.path.join(data_path, context_path), "r", encoding="utf-8") as f:
@@ -134,8 +141,9 @@ class BGEM3KUREHybridRetrieval:
     ######################################
 
     def get_embeddings(self):
-        dense_path = os.path.join(self.data_path, "kure_dense.npy")
-        sparse_path = os.path.join(self.data_path, "bge_sparse.pkl")
+        dense_path = self.dense_embedding_path
+        sparse_path = self.sparse_embedding_path or os.path.join(self.data_path, "bge_sparse.pkl")
+
 
         # Try loading
         if self._try_load_embeddings(dense_path, sparse_path):
@@ -206,6 +214,9 @@ class BGEM3KUREHybridRetrieval:
 
 
     def _try_load_embeddings(self, dense_path, sparse_path):
+        if dense_path is None or sparse_path is None:
+            return False 
+            
         ok = True
 
         if self.use_dense:
@@ -426,7 +437,9 @@ class BGEM3KUREHybridRetrieval:
             row = {
                 "id": qid,
                 "question": qtext,
-                "context": retrieved_context,  # ✅ 합쳐진 context
+                "context": retrieved_context,
+                "retrieval_rank": 1,  # 필수 필드 추가
+                "retrieval_score": float(doc_scores[i][0]) if len(doc_scores[i]) > 0 else 0.0,  # 필수 필드 추가
             }
 
             # Accuracy & MRR 계산

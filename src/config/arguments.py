@@ -110,6 +110,15 @@ class DataTrainingArguments:
     bge_batch_size: int = field(
         default=8, metadata={"help": "Batch size for reranking"}
     )
-    
+    dense_embedding_path: Optional[str] = field(
+    default=None,
+    metadata={"help": "Path to dense embedding numpy file (optional override)"}
+    )
+
+    sparse_embedding_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to sparse embedding pickle file (optional override)"}
+    )
+
 
     

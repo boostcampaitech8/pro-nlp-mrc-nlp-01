@@ -99,7 +99,10 @@ def init_wandb(
     import wandb
     
     # Auto-generate run name if not provided
-    run_name = data_args.wandb_run_name
+    run_name = training_args.run_name
+    if run_name is None:
+        run_name = data_args.wandb_run_name
+    
     if run_name is None or run_name == "run":
         run_name = f"hybrid_kure_alpha{data_args.alpha}_k{data_args.top_k_retrieval}"
         if data_args.use_reranker:
