@@ -43,7 +43,8 @@ def fusion_wrapper(args):
         b_scores, b_indices,
         k_scores, k_indices,
         alpha, topk, use_reranker,
-        query, query_idx, original_context, answers # Added answers
+        query, query_idx, original_context, answers,
+        fusion_method # Added fusion_method
     ) = args
     
     global global_contexts
@@ -71,11 +72,34 @@ def fusion_wrapper(args):
     # Hybrid Fusion
     all_indices = set(b_indices) | set(k_indices)
     hybrid_scores = []
-    for idx in all_indices:
-        s_bm25 = b_map.get(idx, 0.0)
-        s_kure = k_map.get(idx, 0.0)
-        final_score = alpha * s_bm25 + (1 - alpha) * s_kure
-        hybrid_scores.append((idx, final_score))
+    
+    if fusion_method == "rrf":
+        # Reciprocal Rank Fusion
+        # k constant for RRF, usually 60
+        rrf_k = 60
+        
+        # Create rank maps
+        b_rank_map = {idx: i for i, idx in enumerate(b_indices)}
+        k_rank_map = {idx: i for i, idx in enumerate(k_indices)}
+        
+        for idx in all_indices:
+            # If not in list, rank is effectively infinite (score contribution 0)
+            # Standard RRF implementation: sum(1 / (k + rank))
+            score = 0.0
+            if idx in b_rank_map:
+                score += 1.0 / (rrf_k + b_rank_map[idx] + 1)
+            if idx in k_rank_map:
+                score += 1.0 / (rrf_k + k_rank_map[idx] + 1)
+            
+            hybrid_scores.append((idx, score))
+            
+    else: # "weighted_sum"
+        for idx in all_indices:
+            s_bm25 = b_map.get(idx, 0.0)
+            s_kure = k_map.get(idx, 0.0)
+            final_score = alpha * s_bm25 + (1 - alpha) * s_kure
+            hybrid_scores.append((idx, final_score))
+            
     hybrid_scores.sort(key=lambda x: x[1], reverse=True)
     
     # Pre-rerank Result (Top-K)
@@ -84,7 +108,7 @@ def fusion_wrapper(args):
     
     # Reranking Candidate Collection
     if use_reranker:
-        rerank_candidate_k = max(200, topk * 3)
+        rerank_candidate_k = max(300, topk * 3)
         current_candidates = hybrid_scores[:rerank_candidate_k] # [(idx, score), ...]
         
         # Add to local buffer
@@ -103,7 +127,7 @@ def fusion_wrapper(args):
     metrics_data = {
         'pre_rerank_ids': pre_rerank_indices,
         'kure_ids': [], # Fill below
-        'pool_ids': [x[0] for x in hybrid_scores[:max(200, topk * 3)]] if use_reranker else []
+        'pool_ids': [x[0] for x in hybrid_scores[:max(300, topk * 3)]] if use_reranker else []
     }
     
     # KURE Only Top-K
@@ -238,7 +262,8 @@ class HybridKURERetrieval:
         self,
         query_or_dataset: Union[str, Dataset],
         topk: int = 100,
-        alpha: float = 0.5, # Hybrid Fusion Weight (BM25 vs KURE)
+        alpha: float = 0.5, # Hybrid Fusion Weight (BM25 vs KURE) - Used for weighted_sum
+        fusion_method: str = "weighted_sum" # 'weighted_sum' or 'rrf'
     ) -> Tuple[pd.DataFrame, Dict]:
         """
         Hybrid Retrieval을 수행합니다.
@@ -265,7 +290,7 @@ class HybridKURERetrieval:
             queries = query_or_dataset["question"]
             is_single = False
             
-        print(f"\n[Hybrid Retrieval] alpha={alpha} (BM25 vs KURE), topk={topk}")
+        print(f"\n[Hybrid Retrieval] Method={fusion_method}, alpha={alpha} (if applicable), topk={topk}")
         print(f"Using BM25 Ensemble: method={self.ensemble_method}, internal_alpha={self.bm25_alpha}")
         
         # BM25 Retrieval (Ensemble)
@@ -370,7 +395,8 @@ class HybridKURERetrieval:
                 bm25_scores_list[i], bm25_indices_list[i],
                 kure_scores_list[i], kure_indices_list[i],
                 alpha, topk, self.use_reranker,
-                queries[i], i, original_context, answers
+                queries[i], i, original_context, answers,
+                fusion_method
             ))
             
         with Pool(processes=cpu_count()) as pool:
@@ -496,6 +522,7 @@ class HybridKURERetrieval:
                 "total_count": n,
                 "top_k": topk,
                 "alpha": alpha,
+                "fusion_method": fusion_method,
                 "use_reranker": self.use_reranker,
             }
             

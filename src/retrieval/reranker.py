@@ -25,7 +25,7 @@ class CrossEncoderReranker:
     
     def __init__(
         self,
-        model_name: str = "dragonkue/bge-reranker-v2-m3-ko",
+        model_name: str = "upskyy/ko-reranker-8k",
         device: Optional[str] = None,
         max_length: int = 512,
         batch_size: int = 32,

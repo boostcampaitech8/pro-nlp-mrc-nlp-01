@@ -3,33 +3,35 @@ KURE-v1 Dense + BGE-M3 Sparse + BGE-Reranker Hybrid Retrieval + MRC Inference
 기존 inference_bge_m3_fixed.py 와 100% 동일한 플로우를 유지한 Hybrid 버전
 
 python -m src.inference.inference_bge_kure \
-  --output_dir outputs/hn_bge_kure_k100_rk_5_eval/ \
+  --output_dir outputs/hn_bge_kure_k100_rk_5_eval_best_rd/ \
   --overwrite_output_dir True \
   --dataset_name data/train_dataset/ \
-  --model_name_or_path models/train_dataset/ \
+  --model_name_or_path models/best-reader/ \
+  --dense_embedding_path data/kure_dense_hn2.npy \
   --do_eval \
   --eval_retrieval \
   --top_k_retrieval 100 \
   --bge_use_reranker True \
   --bge_rerank_top_k 5 \
   --use_wandb True\
-  --wandb_project "retrieval"
-
+  --wandb_project "retrieval"\
+  --wandb_run_name "bge-kure(hn1)-bge-tk100-rk5" 
+# 
 
 python -m src.inference.inference_bge_kure \
-  --output_dir outputs/hn_bge_kure_k100_rk_5_pred/ \
+  --output_dir outputs/hn_bge_kure_k100_rk_5_pred_3/ \
   --overwrite_output_dir True \
   --dataset_name data/test_dataset/ \
-  --model_name_or_path models/train_dataset/ \
-  --dense_embedding_path data/kure_models_kure_finetuned_encoder_embedding.bin \
+  --model_name_or_path models/best-reader/ \
+  --dense_embedding_path data/kure_dense_hn2.npy \
   --sparse_embedding_path data/bge_sparse.pkl \
   --do_predict \
   --eval_retrieval \
   --top_k_retrieval 100 \
   --bge_use_reranker True \
   --bge_rerank_top_k 5 \
-  --use_wandb False
-
+  --use_wandb False \
+  --fp16 True
 
 
 python -m scripts.hn_mining_kure \

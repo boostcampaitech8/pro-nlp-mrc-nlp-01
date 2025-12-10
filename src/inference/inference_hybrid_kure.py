@@ -68,6 +68,10 @@ class DataTrainingArguments(BaseDataTrainingArguments):
         default=0.5,
         metadata={"help": "Weight for BM25 (0.0-1.0) in hybrid score fusion"}
     )
+    fusion_method: str = field(
+        default="weighted_sum",
+        metadata={"help": "Hybrid retrieval fusion method: 'weighted_sum' or 'rrf'"}
+    )
     use_reranker: bool = field(
         default=False,
         metadata={"help": "Enable Cross-encoder reranking"}
@@ -115,6 +119,7 @@ def init_wandb(
         config={
             # Retrieval parameters
             "retrieval_method": "Hybrid_KURE",
+            "fusion_method": data_args.fusion_method,
             "top_k_retrieval": data_args.top_k_retrieval,
             "alpha": data_args.alpha,
             "use_reranker": data_args.use_reranker,
@@ -164,6 +169,7 @@ def main():
     print(f"Reader Model: {model_args.model_name_or_path}")
     print(f"KURE Model: {data_args.kure_model_path}")
     print(f"Dataset: {data_args.dataset_name}")
+    print(f"Fusion Method: {data_args.fusion_method}")
     print(f"Hybrid Alpha: {data_args.alpha} (BM25 weight)")
     print(f"Top-K Retrieval: {data_args.top_k_retrieval}")
     print(f"Use Reranker: {data_args.use_reranker}")
@@ -288,6 +294,7 @@ def run_hybrid_kure_retrieval(
         query_or_dataset=eval_dataset,
         topk=data_args.top_k_retrieval,
         alpha=data_args.alpha,
+        fusion_method=data_args.fusion_method,
     )
     
     # Remove original_context column if exists

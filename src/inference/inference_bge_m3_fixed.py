@@ -311,10 +311,10 @@ def run_bge_m3_retrieval(
         retrieved_df = retrieved_df.drop(columns=["original_context"])
 
     if training_args.do_predict:
-    drop_cols = ["answers", "original_context"]
-    for col in drop_cols:
-        if col in retrieved_df.columns:
-            retrieved_df = retrieved_df.drop(columns=[col])
+        drop_cols = ["answers", "original_context"]
+        for col in drop_cols:
+            if col in retrieved_df.columns:
+                retrieved_df = retrieved_df.drop(columns=[col])
 
     # Dataset Features 정의
     dataset_features = None

@@ -39,7 +39,8 @@ class BGEM3KUREHybridRetrieval:
         sparse_model_name="BAAI/bge-m3",
 
         # Dense Encoder (KURE)
-        kure_model_name="models/kure_finetuned_hard_neg/best",
+        kure_model_name="models/kure_finetuned_hard_neg/best",  # kure_finetuned_hard_neg/best
+        # kure_finetuned_encoder
 
         # Reranker
         reranker_name="BAAI/bge-reranker-v2-m3",
@@ -216,7 +217,7 @@ class BGEM3KUREHybridRetrieval:
     def _try_load_embeddings(self, dense_path, sparse_path):
         if dense_path is None or sparse_path is None:
             return False 
-            
+
         ok = True
 
         if self.use_dense:
