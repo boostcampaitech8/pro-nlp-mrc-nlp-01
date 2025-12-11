@@ -20,11 +20,10 @@ from typing import List
 from tqdm.auto import tqdm
 import re
 
-# 프로젝트 루트 경로 설정 (스크립트 파일 위치 기준)
-script_path = Path(__file__).resolve()
-# notebooks/negative_passage/create_random_negative_1to1.py -> 프로젝트 루트
-project_root = script_path.parent.parent.parent
-sys.path.append(str(project_root))
+# 프로젝트 루트 경로 설정
+from notebooks.utils import setup_project_path, extract_answer_from_example
+
+project_root = setup_project_path()
 
 # 재현성을 위한 시드 설정
 SEED = 42
@@ -108,9 +107,7 @@ def create_1to1_negative_dataset(
     for example in tqdm(original_dataset, desc=f"Augmenting {dataset_name}"):
         question = example['question']
         positive_context = example['context']
-        answers = example.get('answers', {})
-        answer_texts = answers.get('text', [])
-        answer_text = answer_texts[0] if answer_texts else ''
+        answer_text = extract_answer_from_example(example) or ''
         
         # 1. Positive 예시 추가
         augmented_data['id'].append(example['id'])

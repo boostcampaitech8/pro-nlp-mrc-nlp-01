@@ -12,18 +12,24 @@
 
 import sys
 from pathlib import Path
-from datasets import load_from_disk
+from typing import Dict, List, Optional
+from datasets import load_from_disk, Dataset
 
 # 프로젝트 루트 경로 설정
-project_root = Path(__file__).resolve().parent.parent
-sys.path.append(str(project_root))
+from notebooks.utils import setup_project_path, extract_answer_from_example
+
+project_root = setup_project_path()
 
 # 데이터 경로 설정
 data_root = project_root / "data"
 train_dataset_path = data_root / "train_dataset"
 
 
-def extract_qa_pairs(dataset, output_path: Path, dataset_name: str = ""):
+def extract_qa_pairs(
+    dataset: Dataset, 
+    output_path: Path, 
+    dataset_name: str = ""
+) -> List[Dict[str, str]]:
     """
     데이터셋에서 질문과 정답 페어를 추출하여 txt 파일로 저장
     
@@ -31,39 +37,28 @@ def extract_qa_pairs(dataset, output_path: Path, dataset_name: str = ""):
         dataset: HuggingFace Dataset 객체
         output_path: 출력 파일 경로
         dataset_name: 데이터셋 이름 (로깅용)
+        
+    Returns:
+        qa_pairs: 질문-정답 페어 리스트
     """
     print(f"\n{'='*60}")
     print(f"{dataset_name} 데이터 처리 중...")
     print(f"{'='*60}")
     
-    qa_pairs = []
+    qa_pairs: List[Dict[str, str]] = []
     skipped_count = 0
     
     for example in dataset:
         question = example.get('question', '').strip()
-        answers = example.get('answers', {})
-        
-        # answers가 딕셔너리인 경우
-        if isinstance(answers, dict):
-            answer_texts = answers.get('text', [])
-        # answers가 리스트인 경우
-        elif isinstance(answers, list):
-            answer_texts = answers
-        else:
-            answer_texts = []
+        answer = extract_answer_from_example(example)
         
         # 정답이 있는 경우만 추가
-        if answer_texts and len(answer_texts) > 0:
-            # 첫 번째 정답 사용 (여러 정답이 있는 경우)
-            answer = answer_texts[0].strip()
-            if question and answer:
-                qa_pairs.append({
-                    'question': question,
-                    'answer': answer,
-                    'id': example.get('id', '')
-                })
-            else:
-                skipped_count += 1
+        if answer and question:
+            qa_pairs.append({
+                'question': question,
+                'answer': answer,
+                'id': example.get('id', '')
+            })
         else:
             skipped_count += 1
     

@@ -3,9 +3,15 @@ Python 스크립트를 노트북으로 변환하는 스크립트
 """
 import json
 from pathlib import Path
+from typing import Dict, List, Any
+
+# 프로젝트 루트 경로 설정
+from notebooks.utils import setup_project_path
+
+project_root = setup_project_path()
 
 # 기존 노트북 메타데이터 구조 참고
-metadata = {
+metadata: Dict[str, Any] = {
     'kernelspec': {
         'display_name': 'Python 3',
         'language': 'python',

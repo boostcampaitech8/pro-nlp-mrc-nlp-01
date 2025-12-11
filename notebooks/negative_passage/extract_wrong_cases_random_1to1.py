@@ -21,29 +21,20 @@ from typing import List, Dict
 from tqdm.auto import tqdm
 import evaluate
 
-# 프로젝트 루트 경로 설정 (스크립트 파일 위치 기준)
-script_path = Path(__file__).resolve()
-project_root = script_path.parent.parent.parent
-sys.path.append(str(project_root))
+# 프로젝트 루트 경로 설정
+from notebooks.utils import (
+    setup_project_path,
+    normalize_answer,
+    is_exact_match,
+    find_checkpoint_directory,
+)
+
+project_root = setup_project_path()
 
 # src 모듈 import
 from src.utils import postprocess_qa_predictions
 from transformers import AutoModelForQuestionAnswering, AutoTokenizer
 import torch
-
-
-def normalize_answer(s: str) -> str:
-    """정답 정규화 (비교를 위해)"""
-    import re
-    s = s.lower()
-    s = re.sub(r'\s+', ' ', s)
-    s = s.strip()
-    return s
-
-
-def is_exact_match(prediction: str, ground_truth: str) -> bool:
-    """Exact Match 여부 확인"""
-    return normalize_answer(prediction) == normalize_answer(ground_truth)
 
 
 def extract_wrong_cases(
@@ -175,7 +166,7 @@ def load_model_and_predict(
         args=training_args,
         eval_dataset=eval_dataset,
         eval_examples=eval_examples,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         data_collator=data_collator,
         post_process_function=post_process_function,
         compute_metrics=compute_metrics,
@@ -238,6 +229,7 @@ def main():
         model_path = Path(args.model_path)
         if not model_path.is_absolute():
             model_path = project_root / model_path
+        model_path = find_checkpoint_directory(model_path)
     elif args.auto_find:
         # experiments 디렉토리에서 random 관련 모델 찾기
         experiments_dir = project_root / "notebooks" / "negative_passage" / "experiments"
@@ -247,13 +239,8 @@ def main():
             if random_dirs:
                 # 가장 최근 체크포인트 찾기
                 latest_dir = max(random_dirs, key=lambda p: p.stat().st_mtime)
-                checkpoints = list(latest_dir.glob("checkpoint-*"))
-                if checkpoints:
-                    model_path = max(checkpoints, key=lambda p: int(p.name.split("-")[1]))
-                    print(f"자동으로 찾은 모델: {model_path}")
-                else:
-                    model_path = latest_dir
-                    print(f"체크포인트를 찾지 못해 디렉토리 사용: {model_path}")
+                model_path = find_checkpoint_directory(latest_dir)
+                print(f"자동으로 찾은 모델: {model_path}")
             else:
                 print("random_neg 관련 실험 디렉토리를 찾을 수 없습니다.")
                 return
@@ -269,6 +256,7 @@ def main():
         model_path = Path(model_path_input)
         if not model_path.is_absolute():
             model_path = project_root / model_path
+        model_path = find_checkpoint_directory(model_path)
     
     if not model_path.exists():
         print(f"모델 경로가 존재하지 않습니다: {model_path}")

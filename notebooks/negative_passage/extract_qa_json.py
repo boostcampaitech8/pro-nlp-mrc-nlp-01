@@ -13,9 +13,9 @@ from datasets import load_from_disk
 from tqdm.auto import tqdm
 
 # 프로젝트 루트 경로 설정
-script_path = Path(__file__).resolve()
-project_root = script_path.parent.parent.parent
-sys.path.append(str(project_root))
+from notebooks.utils import setup_project_path, extract_answer_from_example
+
+project_root = setup_project_path()
 
 # 데이터 경로 설정
 data_root = project_root / "data"
@@ -39,28 +39,23 @@ def extract_qa_json(dataset, dataset_name: str, include_answer: bool = True):
     Returns:
         qa_list: 질문-답변 리스트
     """
+    from typing import List, Dict
+    from datasets import Dataset
+    
     print(f"\n{'='*60}")
     print(f"{dataset_name} 데이터 처리 중...")
     print(f"{'='*60}")
 
-    qa_list = []
+    qa_list: List[Dict[str, str]] = []
     skipped_count = 0
 
     for example in tqdm(dataset, desc=f"Processing {dataset_name}"):
         question = example.get('question', '').strip()
         example_id = example.get('id', '')
 
-        answers = example.get('answers', {}) if 'answers' in example else None
-        if isinstance(answers, dict):
-            answer_texts = answers.get('text', [])
-        elif isinstance(answers, list):
-            answer_texts = answers
-        else:
-            answer_texts = []
-
-        answer = ""
-        if answer_texts and len(answer_texts) > 0:
-            answer = answer_texts[0].strip()
+        # 공통 유틸리티 함수 사용
+        answer = extract_answer_from_example(example) or ""
+        
         # include_answer True 혹은 False에 상관없이 answer 필드를 항상 뽑음
         if question:
             qa_list.append({
