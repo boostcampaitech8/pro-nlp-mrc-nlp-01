@@ -224,6 +224,8 @@ def main():
         if wandb is not None and retrieval_metrics:
             wandb.log({
                 "retrieval/kure_accuracy": retrieval_metrics.get("kure_accuracy"),
+                "retrieval/bm25_accuracy": retrieval_metrics.get("bm25_accuracy"),
+                "retrieval/bm25_mrr": retrieval_metrics.get("bm25_mrr"),
                 # Hybrid (Pre-rerank) Metrics -> Standard Names
                 "retrieval/accuracy": retrieval_metrics.get("pre_rerank_accuracy"),
                 "retrieval/mrr": retrieval_metrics.get("pre_rerank_mrr"),
@@ -268,8 +270,58 @@ def run_hybrid_kure_retrieval(
 ) -> Tuple[DatasetDict, Dict]:
     """
     Hybrid KURE Retrieval을 수행하고 retrieved context를 Dataset에 추가합니다.
+    캐시 로드/저장 기능 지원.
     """
     
+    # Check for cached retrieval results
+    load_path = getattr(data_args, "load_retrieval_path", None)
+    save_path = getattr(data_args, "save_retrieval_path", None)
+    
+    is_predict_mode = training_args.do_predict
+    is_eval_mode = training_args.do_eval
+
+    # Define features based on mode
+    if is_predict_mode:
+        dataset_features = Features(
+            {
+                "context": Value(dtype="string", id=None),
+                "id": Value(dtype="string", id=None),
+                "question": Value(dtype="string", id=None),
+            }
+        )
+    elif is_eval_mode:
+        dataset_features = Features(
+            {
+                "answers": Sequence(
+                    feature={
+                        "text": Value(dtype="string", id=None),
+                        "answer_start": Value(dtype="int32", id=None),
+                    },
+                    length=-1,
+                    id=None,
+                ),
+                "context": Value(dtype="string", id=None),
+                "id": Value(dtype="string", id=None),
+                "question": Value(dtype="string", id=None),
+            }
+        )
+    else:
+        dataset_features = None
+    
+    # --- LOAD FROM CACHE ---
+    if load_path and os.path.exists(load_path):
+        print(f"\n{'='*60}")
+        print(f"[CACHE] Loading retrieval results from: {load_path}")
+        print(f"{'='*60}")
+        
+        retrieved_df = pd.read_json(load_path, orient="records", lines=True)
+        print(f"[CACHE] Loaded {len(retrieved_df)} rows. Skipping retrieval!")
+        
+        # Return with empty metrics (not recalculated)
+        result_datasets = DatasetDict({"validation": Dataset.from_pandas(retrieved_df, features=dataset_features)})
+        return result_datasets, {}
+    
+    # --- RUN RETRIEVAL ---
     # Initialize Hybrid Retriever
     retriever = HybridKURERetrieval(
         tokenizer=tokenizer,
@@ -301,34 +353,14 @@ def run_hybrid_kure_retrieval(
     if "original_context" in retrieved_df.columns:
         retrieved_df = retrieved_df.drop(columns=["original_context"])
 
-    dataset_features = None
-    is_predict_mode = training_args.do_predict
-    is_eval_mode = training_args.do_eval
-    
-    if is_predict_mode:
-        dataset_features = Features(
-            {
-                "context": Value(dtype="string", id=None),
-                "id": Value(dtype="string", id=None),
-                "question": Value(dtype="string", id=None),
-            }
-        )
-    elif is_eval_mode:
-        dataset_features = Features(
-            {
-                "answers": Sequence(
-                    feature={
-                        "text": Value(dtype="string", id=None),
-                        "answer_start": Value(dtype="int32", id=None),
-                    },
-                    length=-1,
-                    id=None,
-                ),
-                "context": Value(dtype="string", id=None),
-                "id": Value(dtype="string", id=None),
-                "question": Value(dtype="string", id=None),
-            }
-        )
+    # --- SAVE TO CACHE ---
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        retrieved_df.to_json(save_path, orient="records", lines=True, force_ascii=False)
+        print(f"\n{'='*60}")
+        print(f"[CACHE] Saved retrieval results to: {save_path}")
+        print(f"[CACHE] {len(retrieved_df)} rows saved. Use --load_retrieval_path to skip retrieval next time.")
+        print(f"{'='*60}")
     
     result_datasets = DatasetDict({"validation": Dataset.from_pandas(retrieved_df, features=dataset_features)})
     return result_datasets, metrics

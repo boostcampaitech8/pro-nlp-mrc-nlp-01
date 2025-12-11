@@ -39,8 +39,8 @@ class BGEM3KUREHybridRetrieval:
         sparse_model_name="BAAI/bge-m3",
 
         # Dense Encoder (KURE)
-        kure_model_name="models/kure_finetuned_hard_neg/best",  # kure_finetuned_hard_neg/best
-        # kure_finetuned_encoder
+        kure_model_name="models/kure_finetuned/encoder",  # kure_finetuned_hard_neg/best
+        # kure_finetuned/encoder
 
         # Reranker
         reranker_name="BAAI/bge-reranker-v2-m3",

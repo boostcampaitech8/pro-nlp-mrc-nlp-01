@@ -149,3 +149,13 @@ class DataTrainingArguments:
         default=0.05, 
         metadata={"help": "Temperature for scaling similarity scores"}
     )
+
+    # Retrieval Caching (검색 결과 캐싱)
+    save_retrieval_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to save retrieval results for caching (e.g., data/cache/retrieval_k5.json)"}
+    )
+    load_retrieval_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to load cached retrieval results (skip retrieval if provided)"}
+    )

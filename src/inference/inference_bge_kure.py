@@ -3,19 +3,19 @@ KURE-v1 Dense + BGE-M3 Sparse + BGE-Reranker Hybrid Retrieval + MRC Inference
 기존 inference_bge_m3_fixed.py 와 100% 동일한 플로우를 유지한 Hybrid 버전
 
 python -m src.inference.inference_bge_kure \
-  --output_dir outputs/hn_bge_kure_k100_rk_5_eval_best_rd/ \
+  --output_dir outputs/hn_bge_kure_k100_rk_5_eval_best_rd3/ \
   --overwrite_output_dir True \
   --dataset_name data/train_dataset/ \
-  --model_name_or_path models/best-reader/ \
+  --model_name_or_path models/curtis/ \
   --dense_embedding_path data/kure_dense_hn2.npy \
   --do_eval \
   --eval_retrieval \
   --top_k_retrieval 100 \
   --bge_use_reranker True \
   --bge_rerank_top_k 5 \
-  --use_wandb True\
-  --wandb_project "retrieval"\
-  --wandb_run_name "bge-kure(hn1)-bge-tk100-rk5" 
+  --use_wandb True \
+  --wandb_project "retrieval" \
+  --wandb_run_name "bm25(0.5)kure(0.5)3" 
 # 
 
 python -m src.inference.inference_bge_kure \
@@ -85,6 +85,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from src.config.arguments import DataTrainingArguments, ModelArguments
 from src.retrieval.retrieval_bge_kure import BGEM3KUREHybridRetrieval
+from src.retrieval.retrieval_bm25_kure import BGEM3KUREHybridRetrievalWithBM25Ensemble
 from src.training.trainer_qa import QuestionAnsweringTrainer
 from src.utils.utils_qa import postprocess_qa_predictions, check_no_error
 
@@ -260,7 +261,7 @@ def run_kure_bge_retrieval(
 
     logger.info("*** Running Hybrid KURE+BGE Retrieval ***")
 
-    retriever = BGEM3KUREHybridRetrieval(
+    retriever = BGEM3KUREHybridRetrievalWithBM25Ensemble(
         data_path=data_path,
         context_path=context_path,
         batch_size=config["batch_size"],
@@ -269,7 +270,9 @@ def run_kure_bge_retrieval(
         use_sparse=config["use_sparse"],
         use_reranker=config["use_reranker"],
         dense_embedding_path=data_args.dense_embedding_path,
-        sparse_embedding_path=data_args.sparse_embedding_path,
+        bm25_ensemble_method="weighted_sum",  # 추가
+        bm25_alpha=0.7,  # 추가
+        model_name_or_path="bert-base-multilingual-cased",  # 추가
 
     )
 

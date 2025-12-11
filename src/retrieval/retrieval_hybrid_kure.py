@@ -10,6 +10,7 @@ import pandas as pd
 from typing import List, Optional, Tuple, Union, Dict
 from tqdm.auto import tqdm
 from datasets import Dataset
+from multiprocessing import Pool, cpu_count
 
 from .retrieval_bm25_ensemble import BM25EnsembleRetrieval
 from .retrieval_kure import KURERetrieval
@@ -107,8 +108,8 @@ def fusion_wrapper(args):
     pre_rerank_scores = [x[1] for x in hybrid_scores[:topk]]
     
     # Reranking Candidate Collection
+    rerank_candidate_k = max(200, topk * 3) if use_reranker else topk
     if use_reranker:
-        rerank_candidate_k = max(300, topk * 3)
         current_candidates = hybrid_scores[:rerank_candidate_k] # [(idx, score), ...]
         
         # Add to local buffer
@@ -127,7 +128,7 @@ def fusion_wrapper(args):
     metrics_data = {
         'pre_rerank_ids': pre_rerank_indices,
         'kure_ids': [], # Fill below
-        'pool_ids': [x[0] for x in hybrid_scores[:max(300, topk * 3)]] if use_reranker else []
+        'pool_ids': [x[0] for x in hybrid_scores[:rerank_candidate_k]] if use_reranker else []
     }
     
     # KURE Only Top-K
@@ -256,7 +257,7 @@ class HybridKURERetrieval:
         self.contexts = self.bm25_retriever.contexts
         self.ids = self.bm25_retriever.ids
         print("=" * 50)
-        print("Hybrid KURE (with BM25 Ensemble) Retrieval initialized!")
+        print("Hybrid KURE (with BM25 Wandb) Retrieval initialized!")
         
     def retrieve(
         self,
@@ -295,24 +296,6 @@ class HybridKURERetrieval:
         
         # BM25 Retrieval (Ensemble)
         print("Retrieving with BM25 Ensemble...")
-        # Since BM25Ensemble.retrieve checks instance, we can't use bulk directly if we want consistent return.
-        # But BM25EnsembleRetrieval does not expose get_relevant_doc_bulk directly in a simple way 
-        # that returns scores/indices without DataFrame logic in 'retrieve'.
-        # Actually it does have logic inside 'retrieve' but returns DataFrame.
-        # We need raw scores/indices. 
-        # Let's check BM25EnsembleRetrieval.retrieve implementation again.
-        # It creates DataFrame. 
-       
-        # To get raw scores/indices, we'll manually call sub-retrievers and ensemble them here 
-        # OR use a private method if available. 
-        # Using the private _ensemble_single for each query in loop is slow? 
-        # No, we should use the retrieve logic but extract scores? 
-        # Wait, BM25EnsembleRetrieval code shows:
-        # scores_wandb_list, indices_wandb_list = self.retriever_wandb.get_relevant_doc_bulk(queries, k=search_k)
-        # scores_morphs_list, indices_morphs_list = self.retriever_morphs.get_relevant_doc_bulk(queries, k=search_k)
-        # We can replicate this logic here effectively or call a helper.
-        # Since I cannot easily modify ensemble file to add a new method, I will replicate bulk call here.
-        
         # Call sub-retrievers directly for bulk efficiency
         search_k_bm25 = search_k * 2 # Fetch more for ensemble overlap
         
@@ -327,15 +310,12 @@ class HybridKURERetrieval:
         bm25_scores_list = []
         bm25_indices_list = []
         
-        # Ensemble logic (Weighted Sum only for simplicity/speed or use wrapper)
-        # Implementing Weighted Sum here using multiprocessing
+        # Ensemble logic using multiprocessing
         print("  - Ensembling (Multiprocessing)...")
         
         # Set globals
         global global_bm25_retriever
         global_bm25_retriever = self.bm25_retriever
-        
-        from multiprocessing import Pool, cpu_count
         
         ensemble_args = []
         for i in range(len(queries)):
@@ -368,6 +348,8 @@ class HybridKURERetrieval:
         pre_rerank_mrr = 0.0
         kure_correct = 0
         kure_mrr = 0.0
+        bm25_correct = 0
+        bm25_mrr = 0.0
         post_rerank_correct = 0
         post_rerank_mrr = 0.0
         candidate_pool_correct = 0
@@ -431,6 +413,24 @@ class HybridKURERetrieval:
             # Store buffer
             res['id'] = query_or_dataset[i]["id"] if not is_single else "0"
             hybrid_results_buffer[i] = res
+
+        # Phase 1.5: BM25 Metrics Calculation
+        if not is_single and has_ground_truth:
+            print("Calculating BM25 Metrics...")
+            for i in range(len(queries)):
+                original_context = query_or_dataset[i]["context"]
+                # BM25 Top-K indices (bm25_indices_list is search_k*2 length list from ensemble)
+                # We want to measure accuracy @ topk
+                current_bm25_indices = bm25_indices_list[i][:topk]
+                retrieved_contexts_list = [self.contexts[pid] for pid in current_bm25_indices]
+                
+                if any(original_context in rc or rc in original_context for rc in retrieved_contexts_list):
+                    bm25_correct += 1
+                
+                for rank, rc in enumerate(retrieved_contexts_list):
+                    if original_context in rc or rc in original_context:
+                        bm25_mrr += 1.0 / (rank + 1)
+                        break
 
         # Phase 2: Bulk Reranking
         reranked_scores_map = {} # query_idx -> [(passage_id, score), ...]
@@ -503,6 +503,7 @@ class HybridKURERetrieval:
             n = len(queries)
             
             kure_acc = kure_correct / n
+            bm25_acc = bm25_correct / n
             pre_acc = pre_rerank_correct / n
             pool_acc = candidate_pool_correct / n if self.use_reranker else 0.0
             post_acc = post_rerank_correct / n
@@ -510,6 +511,8 @@ class HybridKURERetrieval:
             metrics = {
                 "kure_accuracy": kure_acc,
                 "kure_mrr": kure_mrr / n,
+                "bm25_accuracy": bm25_acc,
+                "bm25_mrr": bm25_mrr / n,
                 "pre_rerank_accuracy": pre_acc,
                 "pre_rerank_mrr": pre_rerank_mrr / n,
                 "candidate_pool_accuracy": pool_acc,
@@ -528,6 +531,7 @@ class HybridKURERetrieval:
             
             print(f"\n{'='*50}")
             print(f"[KURE Only]     Accuracy: {metrics['kure_accuracy']:.4f}, MRR: {metrics['kure_mrr']:.4f}")
+            print(f"[BM25 Only]     Accuracy: {metrics['bm25_accuracy']:.4f}, MRR: {metrics['bm25_mrr']:.4f}")
             print(f"[Before Rerank] Accuracy: {metrics['pre_rerank_accuracy']:.4f}, MRR: {metrics['pre_rerank_mrr']:.4f}")
             if self.use_reranker:
                 print(f"[Candidate Pool] Accuracy: {metrics['candidate_pool_accuracy']:.4f}")
