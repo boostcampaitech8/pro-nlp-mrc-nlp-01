@@ -1,7 +1,7 @@
 ###############################
 # 예시 실행 명령어
 # python -m src.training.eval \
-#   --output_dir outputs/temp \
+#   --output_dir outputs/best_reader_eval \
 #   --dataset_name data/train_dataset \
 #   --model_name_or_path models/best_reader \
 #   --do_eval

@@ -538,9 +538,10 @@ class RobertaCNNForQuestionAnswering(RobertaPreTrainedModel):
                 residual = sequence_output
 
                 # # [디버깅] 가중치 자체가 NaN인지 확인 (이게 뜨면 이전 스텝 역전파에서 망가진 것)
-                # for name, param in cnn_layer.named_parameters():
-                #     if torch.isnan(param).any() or torch.isinf(param).any():
-                        # print(f"💀 [사망 신고] CNN Layer {i}의 가중치({name})가 이미 NaN/Inf입니다!")
+                for name, param in cnn_layer.named_parameters():
+                    # if torch.isnan(param).any() or torch.isinf(param).any():
+                    if torch.isnan(param).any():
+                        print(f"💀 [사망 신고] CNN Layer {i}의 가중치({name})가 이미 NaN입니다!")
                 
                 # Transpose + Contiguous
                 cnn_input = sequence_output.transpose(1, 2).contiguous()
@@ -579,39 +580,39 @@ class RobertaCNNForQuestionAnswering(RobertaPreTrainedModel):
                 i += 1
             
             # 너무 큰 값 자르기 (Clamp)
-            sequence_output = torch.clamp(sequence_output, min=-20, max=20)
+            sequence_output = torch.clamp(sequence_output, min=-15, max=15)
             
             # 출력층 (FP32 상태에서 계산)
             logits = self.qa_outputs(sequence_output)
 
-        # [수정 3] Logits 계산 전 안전장치 (Clamp 범위를 조금 좁혀봄)
-        # NaN이 있으면 0으로 치환하고, 너무 큰 값은 자릅니다.
-        sequence_output = torch.nan_to_num(sequence_output, nan=0.0)
-        sequence_output = torch.clamp(sequence_output, min=-10, max=10)
-            
-        logits = self.qa_outputs(sequence_output)
         
-        # print(f"DEBUG: Final Logits - Max: {logits.max().item():.4f}, Min: {logits.min().item():.4f}")
-        
-        start_logits, end_logits = logits.split(1, dim=-1)
-        start_logits = start_logits.squeeze(-1)
-        end_logits = end_logits.squeeze(-1)
-
-        total_loss = None
-        if start_positions is not None and end_positions is not None:
-            if len(start_positions.size()) > 1:
-                start_positions = start_positions.squeeze(-1)
-            if len(end_positions.size()) > 1:
-                end_positions = end_positions.squeeze(-1)
+            # NaN이 있으면 0으로 치환하고, 너무 큰 값은 자릅니다.
+            sequence_output = torch.nan_to_num(sequence_output, nan=0.0)
+            sequence_output = torch.clamp(sequence_output, min=-20, max=20)
             
-            ignored_index = start_logits.size(1)
-            start_positions = start_positions.clamp(0, ignored_index)
-            end_positions = end_positions.clamp(0, ignored_index)
+            logits = self.qa_outputs(sequence_output)
+        
+            # print(f"DEBUG: Final Logits - Max: {logits.max().item():.4f}, Min: {logits.min().item():.4f}")
+        
+            start_logits, end_logits = logits.split(1, dim=-1)
+            start_logits = start_logits.squeeze(-1)
+            end_logits = end_logits.squeeze(-1)
 
-            loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
-            start_loss = loss_fct(start_logits, start_positions)
-            end_loss = loss_fct(end_logits, end_positions)
-            total_loss = (start_loss + end_loss) / 2
+            total_loss = None
+            if start_positions is not None and end_positions is not None:
+                if len(start_positions.size()) > 1:
+                    start_positions = start_positions.squeeze(-1)
+                if len(end_positions.size()) > 1:
+                    end_positions = end_positions.squeeze(-1)
+            
+                ignored_index = start_logits.size(1)
+                start_positions = start_positions.clamp(0, ignored_index)
+                end_positions = end_positions.clamp(0, ignored_index)
+
+                loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
+                start_loss = loss_fct(start_logits, start_positions)
+                end_loss = loss_fct(end_logits, end_positions)
+                total_loss = (start_loss + end_loss) / 2
             
             # Loss가 NaN이면 0이 아니라 에러를 띄우거나 처리가 필요하지만,
             # 보통 초기화만 잘 되면 해결됩니다.
