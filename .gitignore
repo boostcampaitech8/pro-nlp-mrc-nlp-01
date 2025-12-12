@@ -1,7 +1,10 @@
 # Data folders
 data/
+data_negative/
+data_hybrid/
 data.tar.gz
 code.tar.gz
+
 # Code folder
 code/
 basecode/

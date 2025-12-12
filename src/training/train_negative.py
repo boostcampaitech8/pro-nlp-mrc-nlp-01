@@ -53,7 +53,7 @@ def main():
     
     if training_args.report_to and "wandb" in training_args.report_to:
         wandb.init(
-            project="reader",  # 프로젝트 이름
+            project="reader-parmeter-tuning",  # 프로젝트 이름
             config={
                 "learning_rate": training_args.learning_rate,
                 "num_train_epochs": training_args.num_train_epochs,
@@ -148,11 +148,6 @@ def run_mrc(
 
         overflow_map = tokenized_examples.pop("overflow_to_sample_mapping")
         offset_maps = tokenized_examples.pop("offset_mapping")
-        
-        # RoBERTa-large (or specific finetunes) might have type_vocab_size=1 but use BertTokenizer (type_ids 0/1)
-        # We must remove token_type_ids to prevent index out of bounds if they are present.
-        if "token_type_ids" in tokenized_examples:
-            tokenized_examples.pop("token_type_ids")
 
         tokenized_examples["start_positions"] = []
         tokenized_examples["end_positions"] = []
@@ -233,11 +228,6 @@ def run_mrc(
         )
 
         overflow_to_sample = tokenized_examples.pop("overflow_to_sample_mapping")
-        
-        # Remove token_type_ids if present to avoid crash on RoBERTa
-        if "token_type_ids" in tokenized_examples:
-            tokenized_examples.pop("token_type_ids")
-            
         tokenized_examples["example_id"] = []
 
         total_examples = len(tokenized_examples["input_ids"])
@@ -276,20 +266,14 @@ def run_mrc(
     )
 
     def post_processing_function(examples, features, predictions, training_args):
-        current_run_name = training_args.run_name
-        if not current_run_name:
-             import os
-             current_run_name = os.path.basename(os.path.normpath(training_args.output_dir))
-             
         processed_preds = postprocess_qa_predictions(
             examples=examples,
             features=features,
             predictions=predictions,
             max_answer_length=data_args.max_answer_length,
             output_dir=training_args.output_dir,
-            version_2_with_negative=False,  # <--- [핵심] 이 옵션이 있어야 빈 문자열("")을 뱉습니다.
+            version_2_with_negative=True,  # <--- [핵심] 이 옵션이 있어야 빈 문자열("")을 뱉습니다.
             null_score_diff_threshold=0.0, # [선택] 답 없음으로 판단할 기준점 (기본 0.0)
-            run_name=current_run_name
         )
         formatted_preds = []
         for prediction_id, prediction_text in processed_preds.items():
@@ -304,7 +288,40 @@ def run_mrc(
             final_preds = []      # 예측값 (Predictions) - 짝을 맞추기 위해 새로 정의
 
             for val_example in datasets["validation"]:
-                ref_list.append({"id": val_example["id"], "answers": val_example[ans_col]})
+                
+                # -----------------------------------------------------------
+                # 1. 예측값 (Prediction) 담기
+                # -----------------------------------------------------------
+                # 기존 processed_preds 딕셔너리에서 ID에 맞는 예측 텍스트를 가져옵니다.
+                pred_text = processed_preds.get(val_example["id"], "")
+                
+                final_preds.append({
+                    "id": val_example["id"], 
+                    "prediction_text": pred_text
+                })
+
+                # -----------------------------------------------------------
+                # 2. 정답지 (Reference) 담기 (로직 수정됨)
+                # -----------------------------------------------------------
+                # 기존 변수명(val_example[ans_col]) 활용
+                original_answers = val_example[ans_col]
+
+                # [수정] 정답 리스트가 비어있는 경우(Negative) 처리
+                # 그냥 넘기면 max() 에러가 나므로, [""](빈 문자열)이 정답인 것으로 변환
+                if len(original_answers["text"]) == 0:
+                    formatted_answers = {
+                        "text": [""],        # "정답은 빈 문자열이다"
+                        "answer_start": [-1] # 형식 유지를 위한 더미 값
+                    }
+                else:
+                    # 정답이 있는 경우(Positive)는 원본 그대로 사용
+                    formatted_answers = original_answers
+                
+                # 기존 변수명(ref_list)에 추가
+                ref_list.append({
+                    "id": val_example["id"], 
+                    "answers": formatted_answers
+                })
             return EvalPrediction(
                 predictions=formatted_preds, label_ids=ref_list
             )
@@ -344,7 +361,7 @@ def run_mrc(
         #     resume_checkpoint = model_args.model_name_or_path
         
         training_results = qa_trainer.train(resume_from_checkpoint=resume_checkpoint)
-        qa_trainer.save_model()
+        # qa_trainer.save_model()
 
         train_metrics = training_results.metrics
         train_metrics["train_samples"] = len(processed_train_data)

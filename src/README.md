@@ -2,7 +2,7 @@
 
 Open-Domain Question Answering (ODQA) 프로젝트의 실제 작업용 소스 코드입니다.
 
-## 폴더 구조
+##  폴더 구조
 
 ```
 src/
@@ -53,9 +53,20 @@ python -m src.training.train \
   --do_eval
 ```
 
-### 추론
+#### 방법 3: 학습 중간에 모델 저장하지 않기
+```bash
+# 프로젝트 루트에서 실행
+python -m src.training.train \
+  --model_name_or_path klue/bert-base \
+  --dataset_name data/train_dataset \
+  --output_dir models/train_dataset \
+  --do_train \
+  --save_strategy no \
+  --do_eval
+```
 
-**주의**: 프로젝트 루트에서 실행하세요.
+### 추론
+**주의**: 프로젝트 루트에서 실행하세요. 
 
 #### 방법 1: Python 모듈로 실행
 ```bash

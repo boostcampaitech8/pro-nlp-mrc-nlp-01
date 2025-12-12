@@ -8,7 +8,7 @@ class ModelArguments:
         default="klue/bert-base",
         metadata={
             "help": "Path to pretrained model or model identifier from huggingface.co/models"
-        },
+        }, 
     )
     config_name: Optional[str] = field(
         default=None,

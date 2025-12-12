@@ -4,6 +4,7 @@ import logging
 import os
 import csv
 import random
+import time
 from typing import Any, Optional, Tuple
 
 import numpy as np
@@ -37,6 +38,7 @@ def postprocess_qa_predictions(
     output_dir: Optional[str] = None,
     prefix: Optional[str] = None,
     is_world_process_zero: bool = True,
+    run_name: Optional[str] = None
 ):
     assert (
         len(predictions) == 2
@@ -58,6 +60,7 @@ def postprocess_qa_predictions(
 
     all_predictions = collections.OrderedDict()
     all_nbest_json = collections.OrderedDict()
+    all_ensemble_json = collections.OrderedDict()
     if version_2_with_negative:
         scores_diff_json = collections.OrderedDict()
 
@@ -195,6 +198,28 @@ def postprocess_qa_predictions(
             nbest_list.append(formatted_pred)
         all_nbest_json[example["id"]] = nbest_list
 
+        #앙상블용 json 생성 로직 시작 부분
+        ensemble_candidates = collections.defaultdict(float)
+
+        # 1. 상위 20개(nbest) 내에서 동일한 텍스트의 확률을 합산
+        for pred in nbest_list:
+            if "text" in pred and "probability" in pred:
+                ensemble_candidates[pred["text"]] += pred["probability"]
+        
+        # 2. 딕셔너리를 리스트로 변환
+        ensemble_list = [
+            {"text": k, "probability": v} 
+            for k, v in ensemble_candidates.items()
+        ]
+        
+        # 3. 확률 내림차순 정렬 후 상위 5개만 선택
+        ensemble_list.sort(key=lambda x: x["probability"], reverse=True)
+        final_ensemble_list = ensemble_list[:10]
+        
+        # 4. 결과 저장
+        all_ensemble_json[example["id"]] = final_ensemble_list
+        # --- [추가 끝] ---
+
     if output_dir is not None:
         assert os.path.isdir(output_dir), f"{output_dir} is not a directory."
 
@@ -208,6 +233,27 @@ def postprocess_qa_predictions(
             if prefix is None
             else f"nbest_predictions_{prefix}".json,
         )
+
+        ensemble_save_dir = "/data/ephemeral/git/pro-nlp-mrc-nlp-01/predictions_for_ensemble" 
+        if not os.path.exists(ensemble_save_dir):
+            os.makedirs(ensemble_save_dir, exist_ok=True)
+
+        # 2. 파일명 생성 (run_name이 없으면 현재 시간 사용)
+        if run_name:
+            # 사용자가 입력한 run_name 사용
+            safe_run_name = run_name.replace("/", "_") # 경로 꼬임 방지
+            file_name = f"prediction_for_ensemble_{safe_run_name}.json"
+        else:
+            # run_name이 없으면 output_dir 이름이나 타임스탬프 사용
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            file_name = f"prediction_for_ensemble_{timestamp}.json"
+
+        if prefix is not None:
+             file_name = file_name.replace(".json", f"_{prefix}.json")
+
+        ensemble_file = os.path.join(ensemble_save_dir, file_name)
+
+
         prediction_csv_file = os.path.join(
             output_dir,
             "predictions_submit.csv" if prefix is None else f"predictions_submit_{prefix}.csv",
@@ -223,10 +269,15 @@ def postprocess_qa_predictions(
             writer.write(
                 json.dumps(all_predictions, indent=4, ensure_ascii=False) + "\n"
             )
-        logger.info(f"Saving nbest_preds to {nbest_file}.")
-        with open(nbest_file, "w", encoding="utf-8") as writer:
+        # logger.info(f"Saving ensemble predictions to: {ensemble_file}")
+        # with open(ensemble_file, "w", encoding="utf-8") as writer:
+        #     writer.write(
+        #         json.dumps(all_ensemble_json, indent=4, ensure_ascii=False) + "\n"
+        #     )
+        logger.info(f"Saving ensemble predictions to {ensemble_file}.")
+        with open(ensemble_file, "w", encoding="utf-8") as writer:
             writer.write(
-                json.dumps(all_nbest_json, indent=4, ensure_ascii=False) + "\n"
+                json.dumps(all_ensemble_json, indent=4, ensure_ascii=False) + "\n"
             )
         with open(prediction_csv_file, "w", encoding="utf-8") as f:
             writer = csv.writer(f, delimiter="\t")
