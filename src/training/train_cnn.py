@@ -21,6 +21,9 @@ from transformers import (
     set_seed,
 )
 from ..utils import check_no_error, postprocess_qa_predictions
+from transformers.models.roberta.modeling_roberta import RobertaModel, RobertaPreTrainedModel
+from torch.nn import CrossEntropyLoss
+import torch.nn as nn
 import wandb
 
 # PyTorch 2.6+ 호환성: torch.load의 weights_only 기본값 변경 대응
@@ -53,7 +56,6 @@ def main():
     
     if training_args.report_to and "wandb" in training_args.report_to:
         wandb.init(
-            project="reader",  # 프로젝트 이름
             config={
                 "learning_rate": training_args.learning_rate,
                 "num_train_epochs": training_args.num_train_epochs,
@@ -87,7 +89,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_model_path, use_fast=True)
     
     is_tensorflow_format = ".ckpt" in model_args.model_name_or_path
-    model = AutoModelForQuestionAnswering.from_pretrained(
+    model = RobertaCNNForQuestionAnswering.from_pretrained(
         model_args.model_name_or_path,
         from_tf=is_tensorflow_format,
         config=model_config,
@@ -148,11 +150,6 @@ def run_mrc(
 
         overflow_map = tokenized_examples.pop("overflow_to_sample_mapping")
         offset_maps = tokenized_examples.pop("offset_mapping")
-        
-        # RoBERTa-large (or specific finetunes) might have type_vocab_size=1 but use BertTokenizer (type_ids 0/1)
-        # We must remove token_type_ids to prevent index out of bounds if they are present.
-        if "token_type_ids" in tokenized_examples:
-            tokenized_examples.pop("token_type_ids")
 
         tokenized_examples["start_positions"] = []
         tokenized_examples["end_positions"] = []
@@ -233,11 +230,6 @@ def run_mrc(
         )
 
         overflow_to_sample = tokenized_examples.pop("overflow_to_sample_mapping")
-        
-        # Remove token_type_ids if present to avoid crash on RoBERTa
-        if "token_type_ids" in tokenized_examples:
-            tokenized_examples.pop("token_type_ids")
-            
         tokenized_examples["example_id"] = []
 
         total_examples = len(tokenized_examples["input_ids"])
@@ -276,20 +268,14 @@ def run_mrc(
     )
 
     def post_processing_function(examples, features, predictions, training_args):
-        current_run_name = training_args.run_name
-        if not current_run_name:
-             import os
-             current_run_name = os.path.basename(os.path.normpath(training_args.output_dir))
-             
         processed_preds = postprocess_qa_predictions(
             examples=examples,
             features=features,
             predictions=predictions,
             max_answer_length=data_args.max_answer_length,
             output_dir=training_args.output_dir,
-            version_2_with_negative=False,  # <--- [핵심] 이 옵션이 있어야 빈 문자열("")을 뱉습니다.
+            version_2_with_negative=True,  # <--- [핵심] 이 옵션이 있어야 빈 문자열("")을 뱉습니다.
             null_score_diff_threshold=0.0, # [선택] 답 없음으로 판단할 기준점 (기본 0.0)
-            run_name=current_run_name
         )
         formatted_preds = []
         for prediction_id, prediction_text in processed_preds.items():
@@ -304,7 +290,40 @@ def run_mrc(
             final_preds = []      # 예측값 (Predictions) - 짝을 맞추기 위해 새로 정의
 
             for val_example in datasets["validation"]:
-                ref_list.append({"id": val_example["id"], "answers": val_example[ans_col]})
+                
+                # -----------------------------------------------------------
+                # 1. 예측값 (Prediction) 담기
+                # -----------------------------------------------------------
+                # 기존 processed_preds 딕셔너리에서 ID에 맞는 예측 텍스트를 가져옵니다.
+                pred_text = processed_preds.get(val_example["id"], "")
+                
+                final_preds.append({
+                    "id": val_example["id"], 
+                    "prediction_text": pred_text
+                })
+
+                # -----------------------------------------------------------
+                # 2. 정답지 (Reference) 담기 (로직 수정됨)
+                # -----------------------------------------------------------
+                # 기존 변수명(val_example[ans_col]) 활용
+                original_answers = val_example[ans_col]
+
+                # [수정] 정답 리스트가 비어있는 경우(Negative) 처리
+                # 그냥 넘기면 max() 에러가 나므로, [""](빈 문자열)이 정답인 것으로 변환
+                if len(original_answers["text"]) == 0:
+                    formatted_answers = {
+                        "text": [""],        # "정답은 빈 문자열이다"
+                        "answer_start": [-1] # 형식 유지를 위한 더미 값
+                    }
+                else:
+                    # 정답이 있는 경우(Positive)는 원본 그대로 사용
+                    formatted_answers = original_answers
+                
+                # 기존 변수명(ref_list)에 추가
+                ref_list.append({
+                    "id": val_example["id"], 
+                    "answers": formatted_answers
+                })
             return EvalPrediction(
                 predictions=formatted_preds, label_ids=ref_list
             )
@@ -344,7 +363,7 @@ def run_mrc(
         #     resume_checkpoint = model_args.model_name_or_path
         
         training_results = qa_trainer.train(resume_from_checkpoint=resume_checkpoint)
-        qa_trainer.save_model()
+        # qa_trainer.save_model()
 
         train_metrics = training_results.metrics
         train_metrics["train_samples"] = len(processed_train_data)
@@ -393,6 +412,223 @@ def run_mrc(
         
         # 파일 저장용은 원본 키(eval_...) 유지
         qa_trainer.save_metrics("eval", eval_metrics)
+
+
+class RobertaCNNForQuestionAnswering(RobertaPreTrainedModel):
+    def __init__(self, config):
+        super().__init__(config)
+        self.num_labels = config.num_labels
+
+        # 1. RoBERTa 본체
+        self.roberta = RobertaModel(config, add_pooling_layer=False)
+        
+        # 2. CNN 블록 (2개 층)
+        self.cnn_layers = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(config.hidden_size, config.hidden_size, kernel_size=3, padding=1),
+                nn.Conv1d(config.hidden_size, config.hidden_size, kernel_size=1),
+                nn.ReLU(),
+            ) for _ in range(2)
+        ])
+        
+        self.layer_norms = nn.ModuleList([
+            nn.LayerNorm(config.hidden_size) for _ in range(2)
+        ])
+
+        # 3. 출력층
+        self.qa_outputs = nn.Linear(config.hidden_size, config.num_labels)
+
+        # 4. 중요: 가중치 초기화 적용
+        self.post_init() 
+        self._init_cnn_weights() # CNN 전용 초기화 별도 실행
+
+    def _init_cnn_weights(self):
+        # Conv1d 레이어들은 RoBERTa 기본 초기화에 포함되지 않을 수 있으므로 별도 초기화
+        for module in self.cnn_layers.modules():
+            if isinstance(module, nn.Conv1d):
+                nn.init.normal_(module.weight, mean=0.0, std=0.001)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0.0)
+        
+        for block in self.cnn_layers:
+            # block 구조: [Conv, Conv, ReLU] -> 인덱스 1이 두 번째 Conv
+            last_conv = block[1] 
+            if isinstance(last_conv, nn.Conv1d):
+                nn.init.constant_(last_conv.weight, 0.0)
+                if last_conv.bias is not None:
+                    nn.init.constant_(last_conv.bias, 0.0)
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        token_type_ids=None,
+        position_ids=None,
+        head_mask=None,
+        inputs_embeds=None,
+        start_positions=None,
+        end_positions=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        return_dict=None,
+    ):
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs = self.roberta(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        sequence_output = outputs[0] # (Batch, Seq_Len, Hidden)
+
+        # # CNN 입력 전 NaN 체크 (RoBERTa 자체 발산 방지)
+        # sequence_output = torch.nan_to_num(sequence_output, nan=0.0).float()
+
+        # if attention_mask is not None:
+        #      expanded_mask = attention_mask.unsqueeze(-1).float()
+        #      sequence_output = sequence_output * expanded_mask
+
+        # i = 0
+        # for cnn_layer, layer_norm in zip(self.cnn_layers, self.layer_norms):
+        #     residual = sequence_output
+            
+        #     # [수정 2] Transpose 후 contiguous() 필수!
+        #     # 메모리 비연속성으로 인한 연산 오류 방지
+        #     cnn_input = sequence_output.transpose(1, 2).contiguous()
+
+        #     # [DEBUG] CNN 입력 확인
+        #     if torch.isnan(cnn_input).any():
+        #         print(f"🚨 [비상] CNN Layer {i} 입력 전 NaN 발견!")
+            
+        #     cnn_output = cnn_layer(cnn_input)
+            
+        #     # 다시 돌려놓기 + contiguous
+        #     cnn_output = cnn_output.transpose(1, 2).contiguous()
+            
+        #     if attention_mask is not None:
+        #         cnn_output = cnn_output * expanded_mask
+            
+        #     sequence_output = layer_norm(residual + cnn_output)
+
+        #     i+=1
+
+        with torch.amp.autocast('cuda', enabled=False):
+            
+            # 들어오자마자 FP32(float)로 옷을 갈아입힙니다.
+            sequence_output = sequence_output.float()
+            
+            # 혹시 모를 NaN 제거
+            sequence_output = torch.nan_to_num(sequence_output, nan=0.0, posinf=0.0, neginf=0.0)
+
+            # 마스크 처리 (FP32 상태에서 안전하게)
+            if attention_mask is not None:
+                extended_mask = attention_mask.unsqueeze(-1).float()
+                sequence_output = sequence_output * extended_mask
+            
+            i = 0
+            # CNN 레이어 루프
+            for cnn_layer, layer_norm in zip(self.cnn_layers, self.layer_norms):
+                residual = sequence_output
+
+                # # [디버깅] 가중치 자체가 NaN인지 확인 (이게 뜨면 이전 스텝 역전파에서 망가진 것)
+                for name, param in cnn_layer.named_parameters():
+                    # if torch.isnan(param).any() or torch.isinf(param).any():
+                    if torch.isnan(param).any():
+                        print(f"💀 [사망 신고] CNN Layer {i}의 가중치({name})가 이미 NaN입니다!")
+                
+                # Transpose + Contiguous
+                cnn_input = sequence_output.transpose(1, 2).contiguous()
+
+                # [DEBUG] CNN 입력 확인
+                if torch.isnan(cnn_input).any():
+                    print(f"🚨 [비상] CNN Layer {i} 입력 전 NaN 발견!")
+                
+                # CNN 연산 (이제 FP32라서 안 터짐!)
+                cnn_output = cnn_layer(cnn_input)
+                
+                cnn_output = cnn_output.transpose(1, 2).contiguous()
+
+                # [방어 1] CNN 출력값 소독 (여기서 무한대가 자주 나옵니다)
+                cnn_output = torch.nan_to_num(cnn_output, nan=0.0, posinf=0.0, neginf=0.0)
+                
+                # [방어 2] 값 자르기 (Clamp) - Residual 더하기 전에 너무 큰 값 방지
+                cnn_output = torch.clamp(cnn_output, min=-10.0, max=10.0)
+                
+                if attention_mask is not None:
+                    cnn_output = cnn_output * extended_mask
+                
+                # Residual 더하기
+                added_output = residual + cnn_output
+                
+                # LayerNorm 실행
+                sequence_output = layer_norm(added_output)
+
+                # [방어 3] LayerNorm 결과 소독 (분산 계산 중 NaN 발생 가능성 차단)
+                sequence_output = torch.nan_to_num(sequence_output, nan=0.0, posinf=0.0, neginf=0.0)
+
+                # [DEBUG] 생존 확인
+                if torch.isnan(sequence_output).any():
+                     print(f"🚨 [비상] CNN Layer {i} 통과 후 여전히 NaN 존재!")
+
+                i += 1
+            
+            # 너무 큰 값 자르기 (Clamp)
+            sequence_output = torch.clamp(sequence_output, min=-15, max=15)
+            
+            # 출력층 (FP32 상태에서 계산)
+            logits = self.qa_outputs(sequence_output)
+
+        
+            # NaN이 있으면 0으로 치환하고, 너무 큰 값은 자릅니다.
+            sequence_output = torch.nan_to_num(sequence_output, nan=0.0)
+            sequence_output = torch.clamp(sequence_output, min=-20, max=20)
+            
+            logits = self.qa_outputs(sequence_output)
+        
+            # print(f"DEBUG: Final Logits - Max: {logits.max().item():.4f}, Min: {logits.min().item():.4f}")
+        
+            start_logits, end_logits = logits.split(1, dim=-1)
+            start_logits = start_logits.squeeze(-1)
+            end_logits = end_logits.squeeze(-1)
+
+            total_loss = None
+            if start_positions is not None and end_positions is not None:
+                if len(start_positions.size()) > 1:
+                    start_positions = start_positions.squeeze(-1)
+                if len(end_positions.size()) > 1:
+                    end_positions = end_positions.squeeze(-1)
+            
+                ignored_index = start_logits.size(1)
+                start_positions = start_positions.clamp(0, ignored_index)
+                end_positions = end_positions.clamp(0, ignored_index)
+
+                loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
+                start_loss = loss_fct(start_logits, start_positions)
+                end_loss = loss_fct(end_logits, end_positions)
+                total_loss = (start_loss + end_loss) / 2
+            
+            # Loss가 NaN이면 0이 아니라 에러를 띄우거나 처리가 필요하지만,
+            # 보통 초기화만 잘 되면 해결됩니다.
+
+        if not return_dict:
+            output = (start_logits, end_logits) + outputs[2:]
+            return ((total_loss,) + output) if total_loss is not None else output
+
+        from transformers.modeling_outputs import QuestionAnsweringModelOutput
+        return QuestionAnsweringModelOutput(
+            loss=total_loss,
+            start_logits=start_logits,
+            end_logits=end_logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,79 @@
+program: src/training/train.py
+command:
+  - ${env}
+  - ${interpreter}
+  - "-m"
+  - "src.training.train"
+  - ${args}
+method: bayes  # 또는 "random"
+metric:
+  name: eval/exact_match  # 최적화할 메트릭 (또는 eval_exact_match)
+  goal: maximize
+parameters:
+  # Learning Rate
+  learning_rate:
+    distribution: uniform
+    min: 1e-5
+    max: 5e-5
+    # 또는 더 넓은 범위로
+    # max: 5e-5
+  
+  # Epoch
+  num_train_epochs:
+    values: [1]
+  
+  # Batch Size (논리적 배치 사이즈 = per_device_batch_size * gradient_accumulation_steps)
+  per_device_train_batch_size:
+    values: [8, 16]  # 실제 배치 사이즈는 GPU 메모리에 따라 조정
+  
+  gradient_accumulation_steps:
+    values: [2, 4]  # 논리적 배치: 8*4=32 또는 16*4=64
+  
+  # Scheduler
+  lr_scheduler_type:
+    values: ["linear", "cosine"]
+  
+  # 고정 파라미터들
+  model_name_or_path:
+    value: "HANTAEK/klue-roberta-large-korquad-v1-qa-finetuned"  # 또는 "klue/roberta-large"
+  
+  dataset_name:
+    # value: "data/train_dataset"
+    value: "data_negative"
+  
+  output_dir:
+    value: "models/sweep_outputs"
+
+  overwrite_output_dir:
+    value: true
+  
+  do_train:
+    value: true
+  
+  do_eval:
+    value: true
+  
+  # evaluation_strategy:
+  eval_strategy:
+    value: "epoch"  # 또는 "steps"
+  
+  save_strategy:
+    value: "no"  # Sweep 중에는 체크포인트 저장 안 함
+  
+  report_to:
+    value: "wandb"
+  
+  fp16:
+    value: true  # 필요시
+  
+  logging_steps:
+    value: 100
+  
+  seed:
+    value: 2024
+
+early_terminate:
+  type: hyperband
+  min_iter: 3
+  max_iter: 7
+  s: 2

@@ -1,12 +1,14 @@
-# torch==2.1.0
-
-transformers==4.39.3
-accelerate==0.30.0
-pandas==2.3.3
-evaluate==0.4.6
-
-# faiss install (if you want to)
+torch
+transformers
+accelerate
+pandas
+numpy
+datasets
 faiss-gpu
-
-numpy==1.26.4
+sentence-transformers
+rank_bm25
+kiwipiepy
+evaluate
 scikit-learn
+wandb
+tqdm
