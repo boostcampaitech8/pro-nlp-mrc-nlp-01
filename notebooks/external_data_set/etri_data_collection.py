@@ -22,6 +22,7 @@ import json
 import urllib3
 import time
 import argparse
+import socket
 from pathlib import Path
 from typing import Dict, List, Optional
 from tqdm.auto import tqdm
@@ -82,7 +83,8 @@ class ETRIWikiQA:
                     "Content-Type": "application/json; charset=UTF-8",
                     "Authorization": self.access_key
                 },
-                body=json.dumps(request_json)
+                body=json.dumps(request_json),
+                timeout=urllib3.Timeout(connect=10.0, read=30.0)
             )
             
             print(f"  [응답코드] {response.status}")
@@ -90,15 +92,118 @@ class ETRIWikiQA:
             if response.status == 200:
                 return json.loads(str(response.data, "utf-8"))
             else:
-                print(f"  [응답본문] {str(response.data, 'utf-8')[:200]}")
+                response_body = str(response.data, 'utf-8')
+                print(f"  [응답본문] {response_body[:300]}")
+                
+                # 응답 본문에서 오류 정보 추출
+                try:
+                    error_data = json.loads(response_body)
+                    result = error_data.get('result', -1)
+                    reason = error_data.get('reason', 'Unknown')
+                    
+                    # ETRI 공식 오류 코드에 따른 상세 메시지
+                    self._print_detailed_error(response.status, result, reason)
+                except:
+                    # JSON 파싱 실패 시 기본 메시지
+                    self._print_detailed_error(response.status, -1, "Unknown")
+                
                 return None
         
+        except urllib3.exceptions.ConnectTimeoutError:
+            print(f"  ❌ 연결 타임아웃: 서버({self.api_url})에 연결할 수 없습니다")
+            print("     가능한 원인:")
+            print("     1. ETRI 서버 점검 중이거나 다운됨")
+            print("     2. 방화벽/네트워크 문제")
+            print("     3. IP 접근 제한 (ETRI 콘솔에서 IP 허용 확인 필요)")
+            return None
         except urllib3.exceptions.MaxRetryError as e:
-            print(f"  연결 실패: {e}")
+            print(f"  ❌ 연결 실패: {e}")
+            print("     서버 연결을 재시도했지만 실패했습니다.")
             return None
         except Exception as e:
-            print(f"  요청 실패: {type(e).__name__}: {e}")
+            print(f"  ❌ 요청 실패: {type(e).__name__}: {e}")
             return None
+    
+    def _print_detailed_error(self, status_code: int, result: int, reason: str):
+        """ETRI API 오류 코드에 따른 상세 오류 메시지 출력"""
+        print(f"\n  ⚠️ 오류 분석:")
+        print(f"     HTTP Status: {status_code}")
+        print(f"     Result: {result}")
+        print(f"     Reason: {reason}")
+        print()
+        
+        # ETRI 공식 오류 코드 매핑
+        error_messages = {
+            "Empty Auth Header": {
+                "설명": "Authorization 헤더가 없는 경우",
+                "해결": "코드에서 Authorization 헤더가 올바르게 전달되는지 확인"
+            },
+            "Invalid Key": {
+                "설명": "API 키가 유효하지 않음",
+                "해결": "ETRI 콘솔에서 API 키를 확인하고 올바른 키를 사용하세요"
+            },
+            "Blocked KEY": {
+                "설명": "API 키가 관리자에 의해 차단됨",
+                "해결": "ETRI 관리자에게 문의하거나 새 API 키를 발급받으세요"
+            },
+            "Daily Limit Exceeded": {
+                "설명": "일일 호출 제한(5,000건) 초과",
+                "해결": "내일 다시 시도하거나 API 호출량을 줄이세요"
+            },
+            "Monthly Limit Exceeded": {
+                "설명": "월간 호출 제한 초과",
+                "해결": "다음 달에 다시 시도하거나 API 사용량을 확인하세요"
+            },
+            "Yearly Limit Exceeded": {
+                "설명": "연간 호출 제한 초과",
+                "해결": "ETRI 관리자에게 문의하세요"
+            },
+            "Too Many Keys": {
+                "설명": "같은 IP에서 여러 API 키가 사용됨",
+                "해결": "하나의 API 키만 사용하세요"
+            },
+            "Too Many IPs": {
+                "설명": "하나의 API 키를 여러 IP에서 사용함",
+                "해결": "API 키 사용 정책을 확인하세요"
+            },
+            "Not Allowed IP": {
+                "설명": "API 호출 가능한 IP가 아님 (API 설정에서 허용된 IP가 아님)",
+                "해결": "ETRI 콘솔 → API 설정 → IP 허용 목록에 현재 IP를 추가하세요"
+            },
+            "Not Allowed Subpath": {
+                "설명": "하위경로 접근 제한이 되어 있음",
+                "해결": "API URL 경로를 확인하세요"
+            },
+            "Invalid API": {
+                "설명": "등록되지 않은 API를 요청함",
+                "해결": "API URL이 올바른지 확인하세요: http://epretx.etri.re.kr:8000/api/WikiQA/"
+            },
+            "Request Timeout": {
+                "설명": "서버의 요청 대기 시간 초과",
+                "해결": "잠시 후 다시 시도하세요"
+            },
+            "Body Size Limit Exceeded": {
+                "설명": "요청 바디가 설정된 값보다 큼",
+                "해결": "요청 데이터 크기를 줄이세요"
+            },
+            "Concurrent Limit Exceeded": {
+                "설명": "연속호출 허용 범위를 넘어서 호출함",
+                "해결": "API 호출 간 딜레이를 늘리세요 (--api_delay 옵션)"
+            },
+            "Internal Server Error": {
+                "설명": "ETRI 서버 내부 오류",
+                "해결": "잠시 후 다시 시도하거나 ETRI에 문의하세요"
+            }
+        }
+        
+        if reason in error_messages:
+            info = error_messages[reason]
+            print(f"  📋 {reason}:")
+            print(f"     설명: {info['설명']}")
+            print(f"     해결: {info['해결']}")
+        else:
+            print(f"  📋 알 수 없는 오류: {reason}")
+            print(f"     ETRI 공식 문서를 참고하세요: https://epretx.etri.re.kr/apiDetail?id=62")
     
     def extract_qa_data(self, response: Dict) -> Optional[Dict]:
         """
@@ -265,7 +370,8 @@ def test_api_connection(etri_client: ETRIWikiQA) -> bool:
                 "Content-Type": "application/json; charset=UTF-8",
                 "Authorization": etri_client.access_key
             },
-            body=json.dumps(request_json)
+            body=json.dumps(request_json),
+            timeout=urllib3.Timeout(connect=10.0, read=30.0)
         )
         
         print(f"[responseCode] {response.status}")
@@ -281,12 +387,56 @@ def test_api_connection(etri_client: ETRIWikiQA) -> bool:
                 print(f"정답: {qa_data['answer']}")
                 print(f"신뢰도: {qa_data['confidence']:.4f}")
                 return True
+            else:
+                print("\n⚠️ API 응답은 받았지만 데이터 추출 실패")
+                print("   응답 구조를 확인하세요.")
+                return False
         
-        print("❌ API 응답 실패")
+        # 응답 본문에서 오류 정보 추출
+        try:
+            error_data = json.loads(response_text)
+            result = error_data.get('result', -1)
+            reason = error_data.get('reason', 'Unknown')
+            
+            # ETRI 공식 오류 코드에 따른 상세 메시지
+            print("\n❌ API 오류 발생!")
+            etri_client._print_detailed_error(response.status, result, reason)
+        except:
+            # JSON 파싱 실패 시 기본 메시지
+            print("\n❌ API 응답 실패")
+            if response.status == 403:
+                print("   403 Forbidden: 접근이 거부되었습니다")
+                print("   ETRI 콘솔에서 IP 허용 목록과 API 키를 확인하세요")
+        
+        print("\n❌ API 응답 실패")
         return False
         
+    except urllib3.exceptions.ConnectTimeoutError:
+        print(f"\n❌ 연결 타임아웃: {ETRI_API_URL}에 연결할 수 없습니다")
+        print("\n가능한 원인:")
+        print("1. ETRI 서버 점검 중이거나 다운됨")
+        print("2. 방화벽/네트워크 문제")
+        print("3. IP 접근 제한")
+        print("   → ETRI 콘솔(https://epretx.etri.re.kr)에서:")
+        print("     - API 설정 → IP 허용 목록에 현재 서버 IP 추가")
+        print("     - 현재 IP 확인: hostname -I 또는 curl ifconfig.me")
+        return False
+    except urllib3.exceptions.MaxRetryError as e:
+        print(f"\n❌ 연결 실패: {e}")
+        
+        # 원인 분석
+        error_str = str(e)
+        if "ConnectTimeoutError" in error_str:
+            print("\n📋 연결 타임아웃 원인 분석:")
+            print("   1. IP 접근 제한 (가장 가능성 높음)")
+            print("      → ETRI 콘솔에서 현재 IP를 허용 목록에 추가해야 합니다")
+            print(f"      → 현재 서버 IP: {socket.gethostbyname(socket.gethostname()) if hasattr(socket, 'gethostbyname') else '확인 필요'}")
+            print("   2. ETRI 서버 점검/다운")
+            print("   3. 방화벽 차단")
+        
+        return False
     except Exception as e:
-        print(f"❌ API 연결 실패: {type(e).__name__}: {e}")
+        print(f"\n❌ API 연결 실패: {type(e).__name__}: {e}")
         return False
 
 
@@ -315,9 +465,30 @@ def main():
     print("✅ ETRI API 클라이언트 초기화 완료")
     print(f"API URL: {ETRI_API_URL}")
     
+    # 현재 서버 IP 확인
+    try:
+        current_ip = socket.gethostbyname(socket.gethostname())
+    except:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            current_ip = s.getsockname()[0]
+            s.close()
+        except:
+            current_ip = "확인 불가"
+    
+    print(f"\n현재 서버 IP: {current_ip}")
+    print("⚠️ ETRI 콘솔에서 이 IP를 허용 목록에 추가했는지 확인하세요!")
+    print("   → https://epretx.etri.re.kr → API 설정 → IP 허용 목록\n")
+    
     # API 연결 테스트
-    print("\n=== API 연결 테스트 ===")
+    print("=== API 연결 테스트 ===")
     if not test_api_connection(etri_qa):
+        print(f"\n💡 해결 방법:")
+        print(f"   1. ETRI 콘솔(https://epretx.etri.re.kr) 접속")
+        print(f"   2. API 설정 → IP 허용 목록에 '{current_ip}' 추가")
+        print(f"   3. API 키가 활성화되어 있는지 확인")
+        print(f"   4. 일일 호출 제한(5,000건) 확인")
         sys.exit(1)
     
     if args.test_only:
