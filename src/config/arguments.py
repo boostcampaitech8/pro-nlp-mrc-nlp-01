@@ -1,14 +1,18 @@
+"""설정 관련 모듈 - 모델 및 데이터 학습 인자 정의."""
+
 from dataclasses import dataclass, field
 from typing import Optional
 
+
 @dataclass
 class ModelArguments:
+    """모델 관련 인자 클래스."""
 
     model_name_or_path: str = field(
         default="klue/bert-base",
         metadata={
             "help": "Path to pretrained model or model identifier from huggingface.co/models"
-        }, 
+        },
     )
     config_name: Optional[str] = field(
         default=None,
@@ -31,6 +35,7 @@ class ModelArguments:
 
 @dataclass
 class DataTrainingArguments:
+    """데이터 및 학습 관련 인자 클래스."""
 
     dataset_name: Optional[str] = field(
         default="../data/train_dataset",
@@ -110,10 +115,6 @@ class DataTrainingArguments:
     bge_batch_size: int = field(
         default=8, metadata={"help": "Batch size for reranking"}
     )
-    dense_embedding_path: Optional[str] = field(
-    default=None,
-    metadata={"help": "Path to dense embedding numpy file (optional override)"}
-    )
 
     bge_use_dense: bool = field(
         default=True, metadata={"help": "Use dense retrieval"}
@@ -146,11 +147,11 @@ class DataTrainingArguments:
         default=None, metadata={"help": "Path to save/load dense embeddings"}
     )
     temperature: float = field(
-        default=0.05, 
+        default=0.05,
         metadata={"help": "Temperature for scaling similarity scores"}
     )
 
-    # Retrieval Caching (검색 결과 캐싱)
+    # Retrieval Caching
     save_retrieval_path: Optional[str] = field(
         default=None,
         metadata={"help": "Path to save retrieval results for caching (e.g., data/cache/retrieval_k5.json)"}

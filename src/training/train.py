@@ -1,3 +1,5 @@
+"""학습(Training) 모듈 - QA 모델 학습을 위한 메인 스크립트."""
+
 import logging
 import os
 import sys
@@ -32,20 +34,23 @@ if hasattr(torch.serialization, 'add_safe_globals'):
     except (AttributeError, ImportError):
         pass
 
-seed = 2024
-deterministic = False
+# 시드 고정
+_SEED = 2024
+_DETERMINISTIC = False
 
-random.seed(seed)
-np.random.seed(seed)
-torch.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)
-if deterministic:
-	torch.backends.cudnn.deterministic = True
-	torch.backends.cudnn.benchmark = False
+random.seed(_SEED)
+np.random.seed(_SEED)
+torch.manual_seed(_SEED)
+torch.cuda.manual_seed_all(_SEED)
+if _DETERMINISTIC:
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 logger = logging.getLogger(__name__)
 
-def main():
+
+def main() -> None:
+    """학습 메인 함수."""
     parser = HfArgumentParser(
         (ModelArguments, DataTrainingArguments, TrainingArguments)
     )
@@ -104,9 +109,19 @@ def run_mrc(
     training_args: TrainingArguments,
     model_args: ModelArguments,
     datasets: DatasetDict,
-    tokenizer,
-    model,
-) -> NoReturn:
+    tokenizer: AutoTokenizer,
+    model: AutoModelForQuestionAnswering,
+) -> None:
+    """Machine Reading Comprehension 모델 학습 및 평가를 수행합니다.
+    
+    Args:
+        data_args: 데이터 학습 인자
+        training_args: 학습 인자
+        model_args: 모델 인자
+        datasets: 데이터셋 딕셔너리
+        tokenizer: 토크나이저
+        model: QA 모델
+    """
 
     is_training = training_args.do_train
     if is_training:

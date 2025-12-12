@@ -1,3 +1,5 @@
+"""추론(Inference) 모듈 - 학습된 모델을 사용한 예측 수행."""
+
 import logging
 import os
 import sys
@@ -30,7 +32,9 @@ from ..utils import check_no_error, postprocess_qa_predictions
 
 logger = logging.getLogger(__name__)
 
-def main():
+
+def main() -> None:
+    """추론 메인 함수."""
 
     parser = HfArgumentParser(
         (ModelArguments, DataTrainingArguments, TrainingArguments)
@@ -89,6 +93,19 @@ def run_sparse_retrieval(
     data_path: str = "data",
     context_path: str = "wikipedia_documents.json",
 ) -> DatasetDict:
+    """Sparse Retrieval을 수행하여 컨텍스트를 검색합니다.
+    
+    Args:
+        tokenize_fn: 토큰화 함수
+        datasets: 데이터셋 딕셔너리
+        training_args: 학습 인자
+        data_args: 데이터 학습 인자
+        data_path: 데이터 경로
+        context_path: 컨텍스트 파일 경로
+    
+    Returns:
+        검색 결과가 추가된 데이터셋 딕셔너리
+    """
 
     sparse_retriever = SparseRetrieval(
         tokenize_fn=tokenize_fn, data_path=data_path, context_path=context_path
@@ -143,9 +160,19 @@ def run_mrc(
     training_args: TrainingArguments,
     model_args: ModelArguments,
     datasets: DatasetDict,
-    tokenizer,
-    model,
-) -> NoReturn:
+    tokenizer: AutoTokenizer,
+    model: AutoModelForQuestionAnswering,
+) -> None:
+    """Machine Reading Comprehension 작업을 수행합니다.
+    
+    Args:
+        data_args: 데이터 학습 인자
+        training_args: 학습 인자
+        model_args: 모델 인자
+        datasets: 데이터셋 딕셔너리
+        tokenizer: 토크나이저
+        model: QA 모델
+    """
 
     val_column_names = datasets["validation"].column_names
 

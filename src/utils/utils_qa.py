@@ -1,3 +1,5 @@
+"""유틸리티 함수 모듈 - QA 작업을 위한 헬퍼 함수들."""
+
 import collections
 import json
 import logging
@@ -5,7 +7,7 @@ import os
 import csv
 import random
 import time
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -17,7 +19,13 @@ from transformers.trainer_utils import get_last_checkpoint
 
 logger = logging.getLogger(__name__)
 
-def set_seed(seed: int = 42):
+
+def set_seed(seed: int = 42) -> None:
+    """시드를 고정하여 재현 가능한 결과를 보장합니다.
+    
+    Args:
+        seed: 고정할 시드 값 (기본값: 42)
+    """
     random.seed(seed)
     np.random.seed(seed)
     if is_torch_available():
@@ -28,8 +36,8 @@ def set_seed(seed: int = 42):
         torch.backends.cudnn.benchmark = False
 
 def postprocess_qa_predictions(
-    examples,
-    features,
+    examples: Dict[str, Any],
+    features: List[Dict[str, Any]],
     predictions: Tuple[np.ndarray, np.ndarray],
     version_2_with_negative: bool = False,
     n_best_size: int = 20,
@@ -38,8 +46,28 @@ def postprocess_qa_predictions(
     output_dir: Optional[str] = None,
     prefix: Optional[str] = None,
     is_world_process_zero: bool = True,
-    run_name: Optional[str] = None
-):
+    run_name: Optional[str] = None,
+    ensemble_save_dir: Optional[str] = None,
+) -> Dict[str, str]:
+    """QA 예측 결과를 후처리하여 최종 답변을 생성합니다.
+    
+    Args:
+        examples: 원본 예제 딕셔너리
+        features: 토큰화된 피처 리스트
+        predictions: (start_logits, end_logits) 튜플
+        version_2_with_negative: SQuAD 2.0 형식 지원 여부
+        n_best_size: 상위 n개 후보를 고려
+        max_answer_length: 최대 답변 길이
+        null_score_diff_threshold: null 답변 판단 임계값
+        output_dir: 결과 저장 디렉토리
+        prefix: 파일명 접두사
+        is_world_process_zero: 메인 프로세스 여부
+        run_name: 실행 이름 (앙상블 파일명에 사용)
+        ensemble_save_dir: 앙상블 예측 저장 디렉토리 (None이면 output_dir 사용)
+    
+    Returns:
+        예측 결과 딕셔너리 {example_id: answer_text}
+    """
     assert (
         len(predictions) == 2
     ), "`predictions` should be a tuple with two elements (start_logits, end_logits)."
@@ -198,70 +226,65 @@ def postprocess_qa_predictions(
             nbest_list.append(formatted_pred)
         all_nbest_json[example["id"]] = nbest_list
 
-        #앙상블용 json 생성 로직 시작 부분
+        # 앙상블용 json 생성: 상위 n_best_size개 내에서 동일한 텍스트의 확률을 합산
         ensemble_candidates = collections.defaultdict(float)
-
-        # 1. 상위 20개(nbest) 내에서 동일한 텍스트의 확률을 합산
         for pred in nbest_list:
             if "text" in pred and "probability" in pred:
                 ensemble_candidates[pred["text"]] += pred["probability"]
         
-        # 2. 딕셔너리를 리스트로 변환
+        # 딕셔너리를 리스트로 변환하고 확률 내림차순 정렬
         ensemble_list = [
             {"text": k, "probability": v} 
             for k, v in ensemble_candidates.items()
         ]
-        
-        # 3. 확률 내림차순 정렬 후 상위 5개만 선택
         ensemble_list.sort(key=lambda x: x["probability"], reverse=True)
-        final_ensemble_list = ensemble_list[:10]
         
-        # 4. 결과 저장
-        all_ensemble_json[example["id"]] = final_ensemble_list
-        # --- [추가 끝] ---
+        # 상위 10개만 선택하여 저장
+        all_ensemble_json[example["id"]] = ensemble_list[:10]
 
     if output_dir is not None:
         assert os.path.isdir(output_dir), f"{output_dir} is not a directory."
 
         prediction_file = os.path.join(
             output_dir,
-            "predictions.json" if prefix is None else f"predictions_{prefix}".json,
+            "predictions.json" if prefix is None else f"predictions_{prefix}.json",
         )
         nbest_file = os.path.join(
             output_dir,
             "nbest_predictions.json"
             if prefix is None
-            else f"nbest_predictions_{prefix}".json,
+            else f"nbest_predictions_{prefix}.json",
         )
 
-        ensemble_save_dir = "/data/ephemeral/git/pro-nlp-mrc-nlp-01/predictions_for_ensemble" 
+        # 앙상블 저장 디렉토리 설정 (기본값: output_dir/predictions_for_ensemble)
+        if ensemble_save_dir is None:
+            ensemble_save_dir = os.path.join(output_dir, "predictions_for_ensemble")
+        
         if not os.path.exists(ensemble_save_dir):
             os.makedirs(ensemble_save_dir, exist_ok=True)
 
-        # 2. 파일명 생성 (run_name이 없으면 현재 시간 사용)
+        # 파일명 생성 (run_name이 없으면 타임스탬프 사용)
         if run_name:
-            # 사용자가 입력한 run_name 사용
-            safe_run_name = run_name.replace("/", "_") # 경로 꼬임 방지
+            safe_run_name = run_name.replace("/", "_").replace("\\", "_")  # 경로 문자 제거
             file_name = f"prediction_for_ensemble_{safe_run_name}.json"
         else:
-            # run_name이 없으면 output_dir 이름이나 타임스탬프 사용
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             file_name = f"prediction_for_ensemble_{timestamp}.json"
 
         if prefix is not None:
-             file_name = file_name.replace(".json", f"_{prefix}.json")
+            file_name = file_name.replace(".json", f"_{prefix}.json")
 
         ensemble_file = os.path.join(ensemble_save_dir, file_name)
-
 
         prediction_csv_file = os.path.join(
             output_dir,
             "predictions_submit.csv" if prefix is None else f"predictions_submit_{prefix}.csv",
         )
+        
         if version_2_with_negative:
             null_odds_file = os.path.join(
                 output_dir,
-                "null_odds.json" if prefix is None else f"null_odds_{prefix}".json,
+                "null_odds.json" if prefix is None else f"null_odds_{prefix}.json",
             )
 
         logger.info(f"Saving predictions to {prediction_file}.")
@@ -269,20 +292,32 @@ def postprocess_qa_predictions(
             writer.write(
                 json.dumps(all_predictions, indent=4, ensure_ascii=False) + "\n"
             )
-        # logger.info(f"Saving ensemble predictions to: {ensemble_file}")
-        # with open(ensemble_file, "w", encoding="utf-8") as writer:
-        #     writer.write(
-        #         json.dumps(all_ensemble_json, indent=4, ensure_ascii=False) + "\n"
-        #     )
+        
+        # nbest 예측 저장
+        with open(nbest_file, "w", encoding="utf-8") as writer:
+            writer.write(
+                json.dumps(all_nbest_json, indent=4, ensure_ascii=False) + "\n"
+            )
+        
+        # 앙상블 예측 저장
         logger.info(f"Saving ensemble predictions to {ensemble_file}.")
         with open(ensemble_file, "w", encoding="utf-8") as writer:
             writer.write(
                 json.dumps(all_ensemble_json, indent=4, ensure_ascii=False) + "\n"
             )
-        with open(prediction_csv_file, "w", encoding="utf-8") as f:
+        
+        # CSV 형식으로 제출용 파일 저장
+        with open(prediction_csv_file, "w", encoding="utf-8", newline="") as f:
             writer = csv.writer(f, delimiter="\t")
             for key, value in all_predictions.items():
                 writer.writerow([key, value])
+        
+        # SQuAD 2.0 형식인 경우 null odds 저장
+        if version_2_with_negative:
+            with open(null_odds_file, "w", encoding="utf-8") as writer:
+                writer.write(
+                    json.dumps(scores_diff_json, indent=4, ensure_ascii=False) + "\n"
+                )
 
     return all_predictions
 
@@ -290,8 +325,22 @@ def check_no_error(
     data_args: DataTrainingArguments,
     training_args: TrainingArguments,
     datasets: DatasetDict,
-    tokenizer,
-) -> Tuple[Any, int]:
+    tokenizer: PreTrainedTokenizerFast,
+) -> Tuple[Optional[str], int]:
+    """학습 전 설정 검증 및 체크포인트 확인.
+    
+    Args:
+        data_args: 데이터 학습 인자
+        training_args: 학습 인자
+        datasets: 데이터셋 딕셔너리
+        tokenizer: 토크나이저
+    
+    Returns:
+        (마지막 체크포인트 경로, 최대 시퀀스 길이) 튜플
+    
+    Raises:
+        ValueError: 검증 실패 시
+    """
 
     last_checkpoint = None
     if (
