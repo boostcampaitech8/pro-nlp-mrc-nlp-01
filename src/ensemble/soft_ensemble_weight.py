@@ -7,6 +7,26 @@ from datasets import load_from_disk
 from difflib import SequenceMatcher
 
 # -------------------------------------------------------
+# 앙상블할 모델 파일과 가중치 설정
+# -------------------------------------------------------
+# 형식: (파일명, 가중치)
+# 가중치가 높을수록 해당 모델의 예측이 더 큰 영향을 미침
+ENSEMBLE_MODELS = [
+    ("prediction_for_ensemble_curtis.json", 3.0),
+    ("prediction_for_ensemble_hantaek2.json", 2.0),
+    ("prediction_for_ensemble_potato.json", 2.0),
+    ("prediction_for_ensemble_sunbear.json", 1.0),
+    ("prediction_for_ensemble_uomnf97.json", 3.0),
+    # ("prediction_for_ensemble_model2.json", 1.0),
+    # ("prediction_for_ensemble_model3.json", 0.8),
+    # 필요한 모델 추가...
+]
+
+# 기본 폴더 경로
+DEFAULT_FOLDER = "predictions_for_ensemble"
+
+
+# -------------------------------------------------------
 # 텍스트 정규화 (원본 보존, 비교용 최소 정규화)
 # -------------------------------------------------------
 def normalize_text(text: str):
@@ -20,36 +40,62 @@ def is_similar(a: str, b: str, threshold: float = 0.75):
     return SequenceMatcher(None, a, b).ratio() >= threshold
 
 
-def soft_ensemble(folder_path: str,
+def soft_ensemble(folder_path: str = None,
                   json_out: str = "predictions.json",
-                  csv_out: str = "predictions_submit.csv"):
+                  csv_out: str = "predictions_submit.csv",
+                  model_weights: list = None):
     """
     여러 앙상블 JSON 파일에서 text별 probability를 합산하여
     최종 답변 1개 선택 후 JSON, TAB-CSV 두 가지 출력 파일 생성
+    
+    Args:
+        folder_path: JSON 파일들이 있는 폴더 경로 (기본값: predictions_for_ensemble)
+        json_out: 출력 JSON 파일명
+        csv_out: 출력 CSV 파일명
+        model_weights: (파일명, 가중치) 튜플 리스트 (기본값: ENSEMBLE_MODELS)
     """
+    
+    # 기본값 설정
+    if folder_path is None:
+        folder_path = DEFAULT_FOLDER
+    if model_weights is None:
+        model_weights = ENSEMBLE_MODELS
 
     output_dir = "outputs/ensemble_output"
     os.makedirs(output_dir, exist_ok=True)
     json_out = os.path.join(output_dir, "predictions.json")
     csv_out = os.path.join(output_dir, "predictions_submit.csv")
-    prediction_files = glob(os.path.join(folder_path, "*.json"))
-    if not prediction_files:
-        raise FileNotFoundError(f"폴더에 JSON 파일이 없음: {folder_path}")
+    
+    # 모델 파일 및 가중치 출력
+    print("\n========== 앙상블 모델 설정 ==========")
+    for idx, (file_name, weight) in enumerate(model_weights):
+        file_path = os.path.join(folder_path, file_name)
+        exists = "✓" if os.path.exists(file_path) else "✗ (파일 없음)"
+        print(f"  [{idx}] {file_name}: 가중치 = {weight} {exists}")
+    print("======================================\n")
 
     all_candidates = defaultdict(list)
 
     # ------------------------------------------------
-    # 1. 모든 nbest_predictions.json 후보들을 모은다
+    # 1. 지정된 모델 파일들의 후보를 가중치 적용하여 모은다
     # ------------------------------------------------
-    for file_name in prediction_files:
-        with open(file_name, "r", encoding="utf-8") as f:
+    for file_name, weight in model_weights:
+        file_path = os.path.join(folder_path, file_name)
+        
+        if not os.path.exists(file_path):
+            print(f"[경고] 파일이 존재하지 않아 건너뜀: {file_path}")
+            continue
+            
+        with open(file_path, "r", encoding="utf-8") as f:
             preds = json.load(f)
 
         for qid, cand_list in preds.items():
             for cand in cand_list:  # cand = {"text": ..., "probability": ...}
                 text = cand["text"]
-                prob = float(cand["probability"])
+                prob = float(cand["probability"]) * weight  # 가중치 적용
                 all_candidates[qid].append((text, prob))
+        
+        print(f"[로드 완료] {file_name} (가중치: {weight})")
 
     # ------------------------------------------------
     # 2. 유사도 그룹핑 + 그룹 확률 합산 + 그룹 내 대표 텍스트 선정
@@ -151,13 +197,24 @@ def compute_em(pred_dict, val_dataset_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--folder_path", type=str, required=True)
+    parser.add_argument("--folder_path", type=str, default=DEFAULT_FOLDER,
+                        help="앙상블할 JSON 파일들이 있는 폴더 경로")
     parser.add_argument("--json_out", type=str, default="predictions.json")
     parser.add_argument("--csv_out", type=str, default="predictions_submit.csv")
     parser.add_argument("--val_dataset_path", type=str,
                         default="/data/ephemeral/git/pro-nlp-mrc-nlp-01/data/train_dataset")
+    parser.add_argument("--compute_em", action="store_true",
+                        help="EM 점수 계산 여부")
     args = parser.parse_args()
 
-    pred_dict = soft_ensemble(args.folder_path, args.json_out, args.csv_out)
-    # EM 계산 수행
-    #compute_em(pred_dict, args.val_dataset_path)
+    # 코드 상단의 ENSEMBLE_MODELS 설정 사용
+    pred_dict = soft_ensemble(
+        folder_path=args.folder_path, 
+        json_out=args.json_out, 
+        csv_out=args.csv_out,
+        model_weights=ENSEMBLE_MODELS  # 상단에서 정의한 모델/가중치 사용
+    )
+    
+    # EM 계산 수행 (옵션)
+    if args.compute_em:
+        compute_em(pred_dict, args.val_dataset_path)
