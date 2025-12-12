@@ -1,6 +1,6 @@
 # convert_arrow_to_chatml.py
 # HF Arrow dataset → Qwen3 ChatML dataset 변환 스크립트 (train + validation)
-import unsloth  # ★ 무조건 최상단에!
+import unsloth  
 
 import os
 import json
@@ -10,8 +10,8 @@ from datasets import load_from_disk
 # 0. 설정
 # =======================================
 INPUT_ARROW_DIR = "data/train_dataset"   # load_from_disk() 경로
-TRAIN_JSON_OUT = "data/train_chatml.json"       # ← data/ 폴더로
-VAL_JSON_OUT   = "data/val_chatml.json"         # ← data/ 폴더로
+TRAIN_JSON_OUT = "data/train_chatml.json"      
+VAL_JSON_OUT   = "data/val_chatml.json"         
 
 # 대회 규칙 기반 최적화된 SYSTEM_PROMPT
 SYSTEM_PROMPT = """

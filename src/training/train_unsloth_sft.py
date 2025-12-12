@@ -30,7 +30,7 @@ def main():
 
 
     # ======================================
-    # 1.5 ChatML 템플릿 적용 (★ 여기 넣어야 함)
+    # 1.5 ChatML 템플릿 적용 
     # ======================================
     from unsloth.chat_templates import get_chat_template
     tokenizer = get_chat_template(tokenizer, chat_template="qwen2.5")
@@ -58,6 +58,7 @@ def main():
     # ======================================
     train_path = "data/train_chatml.json"
     dataset = load_dataset("json", data_files=train_path, split="train")
+
     # ======================================
     # 4. TrainingArguments
     # ======================================
@@ -73,18 +74,18 @@ def main():
         learning_rate = 2e-4,
 
         logging_steps = 10,
-        logging_first_step = True,        # ★ wandb 첫 스텝부터 로깅
-        warmup_ratio = 0.03,              # ★ 학습 안정성 UP
-        dataloader_num_workers = 2,       # ★ 학습 속도 증가
+        logging_first_step = True,        
+        warmup_ratio = 0.03,             
+        dataloader_num_workers = 2,       
 
         save_strategy = "no",
-        save_total_limit = None,   # 의미 없어짐
+        save_total_limit = None,   
 
         fp16 = not bfloat16,
         bf16 = bfloat16,
 
         optim = "paged_adamw_32bit",
-        report_to = ["wandb"],     # ← 여기서 wandb 로그 기록됨
+        report_to = ["wandb"],     
     )
 
     # ======================================
