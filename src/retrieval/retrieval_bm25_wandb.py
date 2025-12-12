@@ -22,6 +22,26 @@ def timer(name):
     yield
     print(f"[{name}] done in {time.time() - t0:.3f} s")
 
+# Global variables for multiprocessing
+global_bm25 = None
+global_tokenize_fn = None
+
+def query_bm25_wrapper(args):
+    query, k = args
+    global global_bm25, global_tokenize_fn
+    
+    # Tokenization logic duplicated from process_text to avoid pickling self
+    text = query.lower()
+    tokens = global_tokenize_fn(text)
+    # N-grams (1, 2)
+    tokenized_query = tokens + [f"{tokens[i]} {tokens[i+1]}" for i in range(len(tokens)-1)]
+    
+    scores = global_bm25.get_scores(tokenized_query)
+    sorted_idx = np.argsort(scores)[::-1]
+    top_k_idx = sorted_idx[:k]
+    return scores[top_k_idx].tolist(), top_k_idx.tolist()
+
+
 class BM25RetrievalWithMetrics:
     """BM25 Retrieval with retrieval accuracy metrics for wandb logging."""
     
@@ -203,17 +223,30 @@ class BM25RetrievalWithMetrics:
         self, queries: List, k: Optional[int] = 1
     ) -> Tuple[List, List]:
 
-        doc_scores = []
-        doc_indices = []
+        # Set global variables for multiprocessing
+        global global_bm25, global_tokenize_fn
+        global_bm25 = self.bm25
+        global_tokenize_fn = self.tokenize_fn
+
+        # Use multiprocessing for faster search
+        from multiprocessing import Pool, cpu_count
         
-        for query in tqdm(queries, desc="Bulk search"):
-            tokenized_query = self.process_text(query)
-            scores = self.bm25.get_scores(tokenized_query)
-            sorted_idx = np.argsort(scores)[::-1]
-            top_k_idx = sorted_idx[:k]
-            
-            doc_scores.append(scores[top_k_idx].tolist())
-            doc_indices.append(top_k_idx.tolist())
+        # Use fork to share memory of global_bm25 without pickling
+        with Pool(processes=cpu_count()) as pool:
+            results = list(
+                tqdm(
+                    pool.imap(query_bm25_wrapper, zip(queries, [k]*len(queries))),
+                    total=len(queries),
+                    desc="Bulk search (multiprocessing)"
+                )
+            )
+        
+        # Clear globals
+        global_bm25 = None
+        global_tokenize_fn = None
+        
+        doc_scores = [res[0] for res in results]
+        doc_indices = [res[1] for res in results]
             
         return doc_scores, doc_indices
 

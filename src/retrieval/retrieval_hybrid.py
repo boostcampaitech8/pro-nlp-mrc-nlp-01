@@ -11,6 +11,7 @@ from datasets import Dataset
 # Import existing classes (assuming they are in the same package or accessible)
 from .retrieval_bm25_wandb import BM25RetrievalWithMetrics
 from .retrieval_dpr import DenseRetrieval
+from .reranker import CrossEncoderReranker
 
 class HybridRetrieval:
     def __init__(
@@ -20,9 +21,12 @@ class HybridRetrieval:
         model_args, # For DPR configuration (retriever_name_or_path)
         data_path: str = "./data",
         context_path: str = "wikipedia_documents.json",
+        use_reranker: bool = False,
+        reranker_model: str = "upskyy/ko-reranker",
     ):
         self.data_path = data_path
         self.args = args
+        self.use_reranker = use_reranker
         
         # Initialize BM25 Retriever
         print("Initializing BM25 Retriever...")
@@ -47,6 +51,15 @@ class HybridRetrieval:
         )
         self.dpr_retriever.get_dense_embedding()
         self.dpr_retriever.build_faiss()  # Needed to initialize self.indexer
+        
+        # Initialize Cross-encoder Reranker (optional)
+        self.reranker = None
+        if use_reranker:
+            print(f"Initializing Cross-encoder Reranker: {reranker_model}")
+            self.reranker = CrossEncoderReranker(
+                model_name=reranker_model,
+                cache_dir="/data/ephemeral/models/reranker",
+            )
         
         self.contexts = self.bm25_retriever.contexts
         self.ids = self.bm25_retriever.ids
@@ -115,10 +128,27 @@ class HybridRetrieval:
                 hybrid_scores.append((idx, final_score))
                 
             hybrid_scores.sort(key=lambda x: x[1], reverse=True)
-            top_hybrid = hybrid_scores[:topk]
             
-            top_indices = [x[0] for x in top_hybrid]
-            top_scores = [x[1] for x in top_hybrid]
+            # Reranking 단계 (활성화된 경우)
+            if self.use_reranker and self.reranker is not None:
+                # Hybrid에서 topk * 3개 후보 선정
+                rerank_candidates = hybrid_scores[:topk * 3]
+                candidate_indices = [x[0] for x in rerank_candidates]
+                candidate_passages = [self.contexts[idx] for idx in candidate_indices]
+                
+                # Cross-encoder로 재정렬
+                reranked = self.reranker.rerank_with_indices(
+                    query=query,
+                    passages=candidate_passages,
+                    original_indices=candidate_indices,
+                    top_k=topk,
+                )
+                top_indices, top_scores = reranked
+            else:
+                # Reranker 없이 Hybrid 점수만 사용
+                top_hybrid = hybrid_scores[:topk]
+                top_indices = [x[0] for x in top_hybrid]
+                top_scores = [x[1] for x in top_hybrid]
             
             retrieved_context = " ".join([self.contexts[pid] for pid in top_indices])
             

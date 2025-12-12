@@ -5,9 +5,12 @@ import numpy as np
 import pandas as pd
 import torch
 from contextlib import contextmanager
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Tuple, Dict
 from datasets import Dataset
 from tqdm.auto import tqdm
+from datasets import disable_progress_bar
+
+disable_progress_bar()
 
 
 @contextmanager
@@ -20,12 +23,6 @@ def timer(name):
 class BGEM3RetrievalOptimized:
     """
     메모리 최적화된 BGE-M3 Hybrid Retrieval + Re-ranker
-    
-    주요 개선사항:
-    - 동적 배치 크기 조정
-    - 메모리 효율적인 임베딩 저장
-    - Re-ranker 통합
-    - Hard negative sampling 지원
     """
     
     def __init__(
@@ -35,13 +32,13 @@ class BGEM3RetrievalOptimized:
         model_name: str = "BAAI/bge-m3",
         reranker_name: str = "BAAI/bge-reranker-v2-m3",
         use_fp16: bool = True,
-        batch_size: int = 8,  # 12 -> 8로 감소
+        batch_size: int = 8,
         max_length: int = 512,
         use_dense: bool = True,
         use_sparse: bool = True,
         use_colbert: bool = False,
         use_reranker: bool = True,
-        max_memory_gb: float = 28.0,  # 32GB 중 28GB만 사용
+        max_memory_gb: float = 28.0,
     ):
         self.data_path = data_path
         self.base_batch_size = batch_size
@@ -62,7 +59,7 @@ class BGEM3RetrievalOptimized:
 
         print(f"Number of passages: {len(self.contexts)}")
 
-        # BGE-M3 모델 로드 (메모리 효율화)
+        # BGE-M3 모델 로드
         print(f"Loading BGE-M3 model: {model_name}")
         from FlagEmbedding import BGEM3FlagModel
         
@@ -73,7 +70,7 @@ class BGEM3RetrievalOptimized:
         )
         print("✅ BGE-M3 model loaded")
 
-        # Re-ranker 로드 (선택적)
+        # Re-ranker 로드
         self.reranker = None
         if use_reranker:
             print(f"Loading Re-ranker: {reranker_name}")
@@ -110,7 +107,7 @@ class BGEM3RetrievalOptimized:
             torch.cuda.synchronize()
 
     def get_embeddings(self):
-        """Passage embeddings 생성 또는 로드 (메모리 최적화)"""
+        """Passage embeddings 생성 또는 로드"""
         
         # 파일 경로
         dense_path = os.path.join(self.data_path, "bge_m3_dense_opt.npy")
@@ -131,11 +128,10 @@ class BGEM3RetrievalOptimized:
 
         # 동적 배치 처리
         i = 0
-        pbar = tqdm(total=len(self.contexts), desc="Encoding")
+        pbar = tqdm(total=len(self.contexts), desc="Encoding passages")
         
         with timer("Encoding passages"):
             while i < len(self.contexts):
-                # 현재 배치의 적응적 크기 결정
                 end_idx = min(i + self.base_batch_size, len(self.contexts))
                 batch = self.contexts[i:end_idx]
                 
@@ -152,7 +148,7 @@ class BGEM3RetrievalOptimized:
                         return_colbert_vecs=self.use_colbert,
                     )
 
-                    # Dense (float16으로 저장하여 메모리 절약)
+                    # Dense (float16으로 저장)
                     if self.use_dense:
                         dense_batch = embeddings['dense_vecs'].astype(np.float16)
                         all_dense.append(dense_batch)
@@ -161,7 +157,7 @@ class BGEM3RetrievalOptimized:
                     if self.use_sparse:
                         all_sparse.extend(embeddings['lexical_weights'])
 
-                    # ColBERT (float16 변환)
+                    # ColBERT
                     if self.use_colbert:
                         colbert_batch = [
                             vec.astype(np.float16) for vec in embeddings['colbert_vecs']
@@ -189,7 +185,7 @@ class BGEM3RetrievalOptimized:
         if self.use_dense:
             self.dense_embeddings = np.vstack(all_dense)
             np.save(dense_path, self.dense_embeddings)
-            print(f"✅ Dense embeddings saved: {self.dense_embeddings.shape} (float16)")
+            print(f"✅ Dense embeddings saved: {self.dense_embeddings.shape}")
 
         if self.use_sparse:
             self.sparse_embeddings = all_sparse
@@ -203,7 +199,7 @@ class BGEM3RetrievalOptimized:
             import pickle
             with open(colbert_path, 'wb') as f:
                 pickle.dump(self.colbert_embeddings, f)
-            print(f"✅ ColBERT embeddings saved: {len(self.colbert_embeddings)} passages (float16)")
+            print(f"✅ ColBERT embeddings saved: {len(self.colbert_embeddings)} passages")
 
         self._clear_memory()
 
@@ -255,7 +251,6 @@ class BGEM3RetrievalOptimized:
 
     def _compute_dense_score(self, query_vec, passage_vecs):
         """Dense 스코어 계산"""
-        # float16 -> float32로 변환하여 계산
         query_vec = query_vec.astype(np.float32)
         passage_vecs = passage_vecs.astype(np.float32)
         scores = np.dot(passage_vecs, query_vec.T).squeeze()
@@ -293,23 +288,15 @@ class BGEM3RetrievalOptimized:
         weights: Optional[dict] = None,
         use_rerank: bool = None,
         rerank_top_k: int = 100,
-    ):
-        """
-        단일 쿼리 검색 with Re-ranking
+    ) -> Tuple[List[float], List[int]]:
+        """단일 쿼리 검색 with Re-ranking"""
         
-        Args:
-            query: 검색 쿼리
-            k: 최종 반환할 문서 수
-            weights: 각 방법의 가중치
-            use_rerank: Re-ranker 사용 여부 (None이면 self.use_reranker 따름)
-            rerank_top_k: Re-ranking할 후보 수 (메모리 고려하여 조정)
-        """
         if use_rerank is None:
             use_rerank = self.use_reranker and self.reranker is not None
 
         if weights is None:
             num_methods = sum([self.use_dense, self.use_sparse, self.use_colbert])
-            default_weight = 1.0 / num_methods
+            default_weight = 1.0 / num_methods if num_methods > 0 else 1.0
             weights = {
                 'dense': default_weight if self.use_dense else 0.0,
                 'sparse': default_weight if self.use_sparse else 0.0,
@@ -348,12 +335,11 @@ class BGEM3RetrievalOptimized:
         top_indices = np.argsort(final_scores)[::-1][:initial_k]
         top_scores = final_scores[top_indices]
 
-        # Stage 2: Re-ranking (선택적)
+        # Stage 2: Re-ranking
         if use_rerank and len(top_indices) > k:
             candidates = [self.contexts[i] for i in top_indices]
             pairs = [[query, doc] for doc in candidates]
             
-            # 배치 크기 조정 (메모리 효율)
             rerank_batch_size = min(16, len(pairs))
             
             try:
@@ -391,8 +377,8 @@ class BGEM3RetrievalOptimized:
         weights: Optional[dict] = None,
         use_rerank: bool = None,
         rerank_top_k: int = 100,
-    ):
-        """배치 쿼리 검색 with progressive memory clearing"""
+    ) -> Tuple[List[List[float]], List[List[int]]]:
+        """배치 쿼리 검색"""
         doc_scores, doc_indices = [], []
 
         for i, query in enumerate(tqdm(queries, desc="Retrieving")):
@@ -416,16 +402,13 @@ class BGEM3RetrievalOptimized:
         weights: Optional[dict] = None,
         use_rerank: bool = None,
         rerank_top_k: int = 100,
-    ):
+    ) -> Tuple[pd.DataFrame, Dict]:
         """
-        검색 실행 with Re-ranking
+        검색 실행 with Re-ranking and metrics
         
-        Args:
-            query_or_dataset: 단일 쿼리 또는 Dataset
-            topk: 반환할 문서 수
-            weights: {'dense': 0.5, 'sparse': 0.5, 'colbert': 0.0}
-            use_rerank: Re-ranker 사용 여부
-            rerank_top_k: Re-ranking 전 후보 수 (topk보다 커야 함)
+        Returns:
+            pd.DataFrame: 검색 결과
+            Dict: Retrieval metrics (ground truth가 있는 경우)
         """
         # 단일 쿼리
         if isinstance(query_or_dataset, str):
@@ -433,41 +416,96 @@ class BGEM3RetrievalOptimized:
                 query_or_dataset, k=topk, weights=weights,
                 use_rerank=use_rerank, rerank_top_k=rerank_top_k
             )
-            passages = [self.contexts[i] for i in indices]
-            return scores, passages
+            
+            rows = [{
+                "id": "0",
+                "question": query_or_dataset,
+                "context": self.contexts[idx],
+                "retrieval_rank": rank,
+                "retrieval_score": float(score),
+            } for rank, (idx, score) in enumerate(zip(indices, scores))]
+            
+            return pd.DataFrame(rows), {}
 
         # Dataset 처리
         dataset = query_or_dataset
+        queries = dataset["question"]
 
-        with timer(f"Retrieving for {len(dataset)} queries"):
+        with timer(f"Retrieving for {len(queries)} queries"):
             doc_scores, doc_indices = self.get_relevant_doc_bulk(
-                dataset["question"], k=topk, weights=weights,
+                queries, k=topk, weights=weights,
                 use_rerank=use_rerank, rerank_top_k=rerank_top_k
             )
 
-        # DataFrame 생성
+        # DataFrame 생성 및 metrics 계산
         rows = []
+        has_ground_truth = "context" in dataset.features
+        
+        # Metrics 초기화
+        correct_count = 0
+        total_count = len(queries)
+        mrr_sum = 0.0
+
         for i, example in enumerate(dataset):
             qid = example["id"]
             qtext = example["question"]
+            
+            # Ground truth context (있는 경우)
+            original_context = example.get("context", None) if has_ground_truth else None
 
+            # 이 쿼리에 대한 검색 결과
+            found_answer = False
+            
             for rank, (idx, score) in enumerate(zip(doc_indices[i], doc_scores[i])):
+                retrieved_context = self.contexts[idx]
+                
                 row = {
                     "id": qid,
                     "question": qtext,
-                    "context": self.contexts[idx],
+                    "context": retrieved_context,
                     "retrieval_rank": rank,
                     "retrieval_score": float(score),
                 }
 
-                if "context" in example:
-                    row["original_context"] = example["context"]
+                # Ground truth 비교 (첫 번째 검색 결과에서만)
+                if has_ground_truth and rank == 0:
+                    row["original_context"] = original_context
+                    
+                # Accuracy 체크 (모든 rank 확인)
+                if has_ground_truth and not found_answer and original_context:
+                    if original_context in retrieved_context or retrieved_context in original_context:
+                        if not found_answer:  # 첫 발견
+                            correct_count += 1
+                            mrr_sum += 1.0 / (rank + 1)
+                            found_answer = True
+
                 if "answers" in example:
                     row["answers"] = example["answers"]
 
                 rows.append(row)
 
-        return pd.DataFrame(rows)
+        # Metrics 계산
+        metrics = {}
+        if has_ground_truth:
+            accuracy = correct_count / total_count if total_count > 0 else 0.0
+            mrr = mrr_sum / total_count if total_count > 0 else 0.0
+            
+            metrics = {
+                "retrieval_accuracy": accuracy,
+                "mrr": mrr,
+                "correct_count": correct_count,
+                "total_count": total_count,
+                "top_k": topk,
+            }
+            
+            print(f"\n{'='*50}")
+            print(f"[Retrieval Metrics]")
+            print(f"Accuracy: {accuracy:.4f} ({correct_count}/{total_count})")
+            print(f"MRR: {mrr:.4f}")
+            print(f"Top-K: {topk}")
+            print(f"{'='*50}\n")
+
+        return pd.DataFrame(rows), metrics
 
     def generate_hard_negatives(
         self,
@@ -475,71 +513,11 @@ class BGEM3RetrievalOptimized:
         positive_doc_id: int,
         k: int = 10,
         weights: Optional[dict] = None,
-    ):
-        """
-        Hard negative sampling
-        
-        Args:
-            query: 쿼리
-            positive_doc_id: Positive 문서의 인덱스
-            k: 생성할 hard negative 수
-            weights: 검색 가중치
-            
-        Returns:
-            hard_negative_ids: Hard negative 문서 인덱스 리스트
-        """
-        # Top-k 검색 (positive 제외하고 k+1개 가져오기)
+    ) -> List[int]:
+        """Hard negative sampling"""
         _, indices = self.get_relevant_doc(
             query, k=k+20, weights=weights, use_rerank=False
         )
         
-        # Positive 제외하고 상위 k개 선택
         hard_negatives = [idx for idx in indices if idx != positive_doc_id][:k]
-        
         return hard_negatives
-
-
-# 테스트 코드
-if __name__ == "__main__":
-    print("Testing Optimized BGE-M3 Retrieval with Re-ranker...")
-    
-    retriever = BGEM3RetrievalOptimized(
-        data_path="data",
-        context_path="wikipedia_documents.json",
-        use_dense=True,
-        use_sparse=True,
-        use_colbert=False,  # 메모리 절약
-        use_reranker=True,  # Re-ranker 활성화
-        batch_size=8,
-        max_length=512,
-        max_memory_gb=28.0,
-    )
-    
-    retriever.get_embeddings()
-    
-    # 테스트 쿼리
-    test_query = "대한민국의 수도는?"
-    scores, passages = retriever.retrieve(
-        test_query, 
-        topk=5,
-        weights={'dense': 0.5, 'sparse': 0.5, 'colbert': 0.0},
-        use_rerank=True,
-        rerank_top_k=20,  # 20개 후보 중 5개 선택
-    )
-    
-    print(f"\nTest Query: {test_query}")
-    print(f"\nTop-5 Results (with Re-ranking):")
-    for i, (score, passage) in enumerate(zip(scores, passages), 1):
-        print(f"\n[{i}] Score: {score:.4f}")
-        print(f"    Context: {passage[:150]}...")
-    
-    # Hard negative 테스트
-    print("\n" + "="*50)
-    print("Testing Hard Negative Sampling:")
-    hard_negs = retriever.generate_hard_negatives(
-        query=test_query,
-        positive_doc_id=0,  # 예시
-        k=5,
-        weights={'dense': 0.5, 'sparse': 0.5, 'colbert': 0.0}
-    )
-    print(f"Hard negative IDs: {hard_negs}")

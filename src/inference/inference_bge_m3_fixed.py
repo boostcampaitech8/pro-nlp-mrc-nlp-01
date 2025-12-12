@@ -1,11 +1,9 @@
 """
-최적화된 BGE-M3 + Re-ranker Inference
+최적화된 BGE-M3 + Re-ranker Inference (Fixed)
 
 실행 예시:
-
-# Dense + Sparse + Re-ranker (추천, 메모리 효율)
-python -m src.inference.inference_bge_m3 \
-  --output_dir outputs/eval_bge_m3_rerank_k10/ \
+python -m src.inference.inference_bge_m3_fixed \
+  --output_dir outputs/eval_bge_m3_k10/ \
   --dataset_name data/train_dataset/ \
   --model_name_or_path models/train_dataset/ \
   --do_eval \
@@ -13,36 +11,22 @@ python -m src.inference.inference_bge_m3 \
   --top_k_retrieval 10 \
   --bge_use_reranker True \
   --bge_rerank_top_k 50 \
-  --bge_batch_size 8 \
-  --use_wandb True
+  --use_wandb True \
+  --wandb_project "retrieval"
 
-# ColBERT 포함 (메모리 충분할 때)
-python -m src.inference.inference_bge_m3 \
-  --output_dir outputs/eval_bge_m3_full_k10/ \
+python -m src.inference.inference_bge_m3_fixed \
+  --output_dir outputs/eval_bge_m3_k100_pred/ \
+  --overwrite_output_dir True \
   --dataset_name data/train_dataset/ \
   --model_name_or_path models/train_dataset/ \
-  --do_eval \
+  --do_predict \
   --eval_retrieval \
-  --top_k_retrieval 10 \
-  --bge_use_dense True \
-  --bge_use_sparse True \
-  --bge_use_colbert True \
+  --top_k_retrieval 100 \
   --bge_use_reranker True \
   --bge_rerank_top_k 50 \
-  --bge_dense_weight 0.4 \
-  --bge_sparse_weight 0.4 \
-  --bge_colbert_weight 0.2
+  --use_wandb True \
+  --wandb_project "retrieval"
 
-# Hard Negative Sampling을 위한 데이터 생성
-python -m src.inference.inference_bge_m3_optimized \
-  --output_dir outputs/hard_negatives/ \
-  --dataset_name data/train_dataset/ \
-  --model_name_or_path models/train_dataset/ \
-  --do_eval \
-  --eval_retrieval \
-  --generate_hard_negatives True \
-  --hard_negative_count 5 \
-  --top_k_retrieval 10
 """
 
 import logging
@@ -52,7 +36,6 @@ from typing import Dict, Tuple
 
 import evaluate
 import numpy as np
-from ..config import DataTrainingArguments, ModelArguments
 from datasets import (
     Dataset,
     DatasetDict,
@@ -61,8 +44,6 @@ from datasets import (
     Value,
     load_from_disk,
 )
-from ..retrieval.retrieval_bge_m3 import BGEM3RetrievalOptimized
-from ..training import QuestionAnsweringTrainer
 from transformers import (
     AutoConfig,
     AutoModelForQuestionAnswering,
@@ -73,7 +54,14 @@ from transformers import (
     TrainingArguments,
     set_seed,
 )
-from ..utils import check_no_error, postprocess_qa_predictions
+
+# 프로젝트 루트를 sys.path에 추가
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
+
+from src.config.arguments import DataTrainingArguments, ModelArguments
+from src.retrieval.retrieval_bge_m3_fixed import BGEM3RetrievalOptimized
+from src.training.trainer_qa import QuestionAnsweringTrainer
+from src.utils.utils_qa import postprocess_qa_predictions, check_no_error
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +87,8 @@ def init_wandb(
     method_str = '+'.join(methods)
     
     run_name = data_args.wandb_run_name
-    if run_name is None:
-        run_name = f"bge_m3_opt_{method_str}_k{data_args.top_k_retrieval}"
+    if run_name is None or run_name == "run":
+        run_name = f"bge_m3_{method_str}_k{data_args.top_k_retrieval}"
     
     wandb.init(
         project=data_args.wandb_project,
@@ -145,8 +133,14 @@ def main():
 
     training_args.do_train = True
 
-    print(f"model is from {model_args.model_name_or_path}")
-    print(f"data is from {data_args.dataset_name}")
+    print("="*60)
+    print("BGE-M3 Optimized Retrieval + Re-ranker + MRC Inference")
+    print("="*60)
+    print(f"Reader Model: {model_args.model_name_or_path}")
+    print(f"Dataset: {data_args.dataset_name}")
+    print(f"Top-K Retrieval: {data_args.top_k_retrieval}")
+    print(f"Use Wandb: {data_args.use_wandb}")
+    print("="*60)
 
     # 로깅 설정
     logging.basicConfig(
@@ -158,13 +152,13 @@ def main():
     logger.info("Training/evaluation parameters %s", training_args)
     set_seed(training_args.seed)
 
-    # BGE-M3 설정 (최적화된 파라미터)
+    # BGE-M3 설정
     bge_config = {
         'use_dense': getattr(data_args, 'bge_use_dense', True),
         'use_sparse': getattr(data_args, 'bge_use_sparse', True),
         'use_colbert': getattr(data_args, 'bge_use_colbert', False),
         'use_reranker': getattr(data_args, 'bge_use_reranker', True),
-        'batch_size': getattr(data_args, 'bge_batch_size', 8),  # 12 -> 8
+        'batch_size': getattr(data_args, 'bge_batch_size', 8),
         'max_length': getattr(data_args, 'bge_max_length', 512),
         'rerank_top_k': getattr(data_args, 'bge_rerank_top_k', 100),
         'max_memory_gb': getattr(data_args, 'bge_max_memory_gb', 28.0),
@@ -198,60 +192,52 @@ def main():
         config=model_config,
     )
 
-    # BGE-M3 Retrieval 수행
-    should_run_retrieval = data_args.eval_retrieval
-    retrieval_metrics = None
+    # 원본 validation 예제 저장 (MRC에서 사용)
     original_eval_examples = datasets["validation"]
 
-    # Hard Negative 생성 모드
-    generate_hard_negatives = getattr(data_args, 'generate_hard_negatives', False)
+    # BGE-M3 Retrieval 수행
+    retrieval_metrics = None
+    should_run_retrieval = data_args.eval_retrieval
     
     if should_run_retrieval:
-        if generate_hard_negatives:
-            datasets = generate_hard_negative_dataset(
-                datasets,
-                training_args,
-                data_args,
-                bge_config=bge_config,
-            )
-        else:
-            datasets, retrieval_metrics = run_bge_m3_retrieval(
-                datasets,
-                training_args,
-                data_args,
-                bge_config=bge_config,
-            )
+        datasets, retrieval_metrics = run_bge_m3_retrieval(
+            datasets=datasets,
+            training_args=training_args,
+            data_args=data_args,
+            bge_config=bge_config,
+        )
 
-            # Wandb에 retrieval metrics 로깅
-            if wandb is not None and retrieval_metrics is not None:
-                wandb.log({
-                    "retrieval/accuracy": retrieval_metrics.get("retrieval_accuracy"),
-                    "retrieval/mrr": retrieval_metrics.get("mrr"),
-                    "retrieval/correct_count": retrieval_metrics.get("correct_count"),
-                    "retrieval/total_count": retrieval_metrics.get("total_count"),
-                    "retrieval/top_k": retrieval_metrics.get("top_k"),
-                })
-                print(f"[Wandb] Logged retrieval metrics: {retrieval_metrics}")
+        # Wandb에 retrieval metrics 로깅
+        if wandb is not None and retrieval_metrics:
+            wandb.log({
+                "retrieval/accuracy": retrieval_metrics.get("retrieval_accuracy"),
+                "retrieval/mrr": retrieval_metrics.get("mrr"),
+                "retrieval/correct_count": retrieval_metrics.get("correct_count"),
+                "retrieval/total_count": retrieval_metrics.get("total_count"),
+                "retrieval/top_k": retrieval_metrics.get("top_k"),
+            })
+            print(f"[Wandb] Logged retrieval metrics")
 
     # MRC 수행
     should_run_mrc = training_args.do_eval or training_args.do_predict
-    if should_run_mrc and not generate_hard_negatives:
+    if should_run_mrc:
         mrc_metrics = run_mrc(
-            data_args, 
-            training_args, 
-            model_args, 
-            datasets,
-            tokenizer, 
-            model,
+            data_args=data_args,
+            training_args=training_args,
+            model_args=model_args,
+            datasets=datasets,
+            tokenizer=tokenizer,
+            model=model,
             eval_examples=original_eval_examples,
         )
 
-        if wandb is not None and mrc_metrics is not None:
+        # Wandb에 MRC metrics 로깅
+        if wandb is not None and mrc_metrics:
             wandb.log({
                 "mrc/exact_match": mrc_metrics.get("exact_match"),
                 "mrc/f1": mrc_metrics.get("f1"),
             })
-            print(f"[Wandb] Logged MRC metrics: {mrc_metrics}")
+            print(f"[Wandb] Logged MRC metrics")
 
     # Wandb 종료
     if wandb is not None:
@@ -284,7 +270,7 @@ def run_bge_m3_retrieval(
             'weights': {'dense': 0.5, 'sparse': 0.5, 'colbert': 0.0}
         }
     
-    # BGE-M3 Retrieval 초기화 (최적화 버전)
+    # BGE-M3 Retrieval 초기화
     bge_retriever = BGEM3RetrievalOptimized(
         data_path=data_path,
         context_path=context_path,
@@ -301,16 +287,17 @@ def run_bge_m3_retrieval(
     logger.info("Building or loading optimized BGE-M3 embeddings...")
     bge_retriever.get_embeddings()
     
-    # Retrieval 수행 (Re-ranking 포함)
+    # Retrieval 수행
     topk = data_args.top_k_retrieval
     rerank_top_k = bge_config.get('rerank_top_k', 100)
     
     logger.info(f"Retrieving top-{topk} passages...")
     if bge_config['use_reranker']:
-        logger.info(f"Re-ranking enabled: {rerank_top_k} candidates → {topk} final results")
+        logger.info(f"Re-ranking: {rerank_top_k} candidates → {topk} final")
     
-    retrieved_df = bge_retriever.retrieve(
-        datasets["validation"], 
+    # ⭐ 핵심 수정: retrieve 메서드는 DataFrame과 metrics를 반환
+    retrieved_df, retrieval_metrics = bge_retriever.retrieve(
+        query_or_dataset=datasets["validation"], 
         topk=topk,
         weights=bge_config['weights'],
         use_rerank=bge_config['use_reranker'],
@@ -319,42 +306,15 @@ def run_bge_m3_retrieval(
     
     logger.info(f"Retrieved {len(retrieved_df)} (question, passage) pairs")
 
-    # Retrieval metrics 계산
-    retrieval_metrics = None
+    # original_context 컬럼 제거 (이미 metrics 계산됨)
     if "original_context" in retrieved_df.columns:
-        grouped = retrieved_df.groupby("id")
-        total_questions = grouped.ngroups
-        correct_questions = 0
-
-        def check_retrieval_success(group):
-            original = group["original_context"].iloc[0].strip()
-            for retrieved in group["context"]:
-                retrieved = retrieved.strip()
-                if original in retrieved or retrieved in original:
-                    return True
-                if len(original) >= 100:
-                    start_sample = original[:100]
-                    end_sample = original[-100:]
-                    if (start_sample in retrieved) and (end_sample in retrieved):
-                        return True
-            return False
-
-        for _, group in grouped:
-            if check_retrieval_success(group):
-                correct_questions += 1
-
-        accuracy = correct_questions / total_questions if total_questions > 0 else 0.0
-
-        retrieval_metrics = {
-            "retrieval_accuracy": accuracy,
-            "correct_count": correct_questions,
-            "total_count": total_questions,
-            "top_k": topk,
-            "mrr": None,
-        }
-        
-        logger.info(f"Retrieval Accuracy: {accuracy:.4f} ({correct_questions}/{total_questions})")
         retrieved_df = retrieved_df.drop(columns=["original_context"])
+
+    if training_args.do_predict:
+        drop_cols = ["answers", "original_context"]
+        for col in drop_cols:
+            if col in retrieved_df.columns:
+                retrieved_df = retrieved_df.drop(columns=[col])
 
     # Dataset Features 정의
     dataset_features = None
@@ -382,85 +342,12 @@ def run_bge_m3_retrieval(
             ),
         })
 
+    # ⭐ 핵심 수정: DataFrame을 Dataset으로 변환 (무한 루프 방지)
     result_datasets = DatasetDict({
         "validation": Dataset.from_pandas(retrieved_df, features=dataset_features)
     })
     
     return result_datasets, retrieval_metrics
-
-
-def generate_hard_negative_dataset(
-    datasets: DatasetDict,
-    training_args: TrainingArguments,
-    data_args: DataTrainingArguments,
-    data_path: str = "data",
-    context_path: str = "wikipedia_documents.json",
-    bge_config: dict = None,
-) -> DatasetDict:
-    """Hard Negative Sampling을 위한 데이터셋 생성"""
-    logger.info("*** Generating Hard Negative Dataset ***")
-    
-    bge_retriever = BGEM3RetrievalOptimized(
-        data_path=data_path,
-        context_path=context_path,
-        use_dense=bge_config['use_dense'],
-        use_sparse=bge_config['use_sparse'],
-        use_colbert=bge_config['use_colbert'],
-        use_reranker=False,  # Hard negative에서는 reranker 사용 안 함
-        batch_size=bge_config['batch_size'],
-        max_length=bge_config['max_length'],
-    )
-    
-    bge_retriever.get_embeddings()
-    
-    hard_negative_count = getattr(data_args, 'hard_negative_count', 5)
-    
-    rows = []
-    for example in tqdm(datasets["validation"], desc="Generating hard negatives"):
-        query = example["question"]
-        
-        # Positive document ID 찾기 (실제 정답이 있는 문서)
-        positive_context = example.get("context", "")
-        positive_id = None
-        
-        # Context가 있으면 해당하는 ID 찾기
-        for i, ctx in enumerate(bge_retriever.contexts):
-            if positive_context in ctx or ctx in positive_context:
-                positive_id = i
-                break
-        
-        if positive_id is None:
-            continue
-        
-        # Hard negatives 생성
-        hard_negs = bge_retriever.generate_hard_negatives(
-            query=query,
-            positive_doc_id=positive_id,
-            k=hard_negative_count,
-            weights=bge_config['weights']
-        )
-        
-        # 데이터 저장 (positive + hard negatives)
-        row = {
-            "id": example["id"],
-            "question": query,
-            "positive_context": bge_retriever.contexts[positive_id],
-            "negative_contexts": [bge_retriever.contexts[i] for i in hard_negs],
-            "answers": example.get("answers", None),
-        }
-        rows.append(row)
-    
-    import json
-    output_path = os.path.join(training_args.output_dir, "hard_negatives.json")
-    os.makedirs(training_args.output_dir, exist_ok=True)
-    
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(rows, f, ensure_ascii=False, indent=2)
-    
-    logger.info(f"Hard negatives saved to {output_path}")
-    logger.info(f"Total examples: {len(rows)}, Hard negatives per example: {hard_negative_count}")
-    
-    return datasets
 
 
 def run_mrc(
@@ -472,7 +359,8 @@ def run_mrc(
     model,
     eval_examples,
 ) -> Dict:
-    """MRC 수행 (기존 코드 유지)"""
+    """MRC 수행"""
+    
     validation_dataset = datasets["validation"]
     val_column_names = validation_dataset.column_names
 

@@ -100,3 +100,62 @@ class DataTrainingArguments:
     context_file: str = field(
         default="wikipedia_documents.json", metadata={"help": "Path to context file"}
     )
+
+    bge_use_reranker: bool = field(
+        default=False, metadata={"help": "Use BGE reranker after retrieval"}
+    )
+    bge_rerank_top_k: int = field(
+        default=30, metadata={"help": "Number of top passages to keep after reranking"}
+    )
+    bge_batch_size: int = field(
+        default=8, metadata={"help": "Batch size for reranking"}
+    )
+    dense_embedding_path: Optional[str] = field(
+    default=None,
+    metadata={"help": "Path to dense embedding numpy file (optional override)"}
+    )
+
+    bge_use_dense: bool = field(
+        default=True, metadata={"help": "Use dense retrieval"}
+    )
+    bge_use_sparse: bool = field(
+        default=True, metadata={"help": "Use sparse retrieval"}
+    )
+    bge_use_colbert: bool = field(
+        default=False, metadata={"help": "Use colbert retrieval"}
+    )
+    bge_dense_weight: float = field(
+        default=0.5, metadata={"help": "Weight for dense score"}
+    )
+    bge_sparse_weight: float = field(
+        default=0.5, metadata={"help": "Weight for sparse score"}
+    )
+    bge_colbert_weight: float = field(
+        default=0.0, metadata={"help": "Weight for colbert score"}
+    )
+    bge_max_length: int = field(
+        default=512, metadata={"help": "Max length for BGE"}
+    )
+
+    sparse_embedding_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to sparse embedding pickle file (optional override)"}
+    )
+
+    dense_embedding_path: Optional[str] = field(
+        default=None, metadata={"help": "Path to save/load dense embeddings"}
+    )
+    temperature: float = field(
+        default=0.05, 
+        metadata={"help": "Temperature for scaling similarity scores"}
+    )
+
+    # Retrieval Caching (검색 결과 캐싱)
+    save_retrieval_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to save retrieval results for caching (e.g., data/cache/retrieval_k5.json)"}
+    )
+    load_retrieval_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to load cached retrieval results (skip retrieval if provided)"}
+    )

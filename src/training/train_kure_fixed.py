@@ -1,3 +1,16 @@
+"""
+python -m src.training.train_kure_fixed \
+    --output_dir models/kure_temp_005 \
+    --model_name_or_path nlpai-lab/KURE-v1 \
+    --dataset_name data/train_dataset_hn_kure \
+    --do_train \
+    --num_train_epochs 3 \
+    --per_device_train_batch_size 8 \
+    --learning_rate 2e-5 \
+    --max_seq_length 384 \
+    --temperature 0.05
+"""
+
 import logging
 import os
 import sys
@@ -32,13 +45,14 @@ logger = logging.getLogger(__name__)
 
 # Bi-Encoder for KURE (Siamese Network with Shared Weights)
 class BiEncoder(nn.Module):
-    def __init__(self, model_name_or_path, config=None):
+    def __init__(self, model_name_or_path, config=None, temperature=0.05):
         super(BiEncoder, self).__init__()
         # Shared Encoder
         if config:
             self.model = AutoModel.from_pretrained(model_name_or_path, config=config)
         else:
             self.model = AutoModel.from_pretrained(model_name_or_path)
+        self.temperature = temperature
 
     def mean_pooling(self, model_output, attention_mask):
         token_embeddings = model_output[0] # First element of model_output contains all token embeddings
@@ -77,7 +91,10 @@ class BiEncoder(nn.Module):
         # SBERT usually uses CosineSimilarityLoss -> which normalizes.
         # BiEncoder with In-Batch Negatives (NLL Loss) uses dot product logits.
         
-        sim_scores = torch.matmul(q_emb, c_emb.transpose(0, 1)) # (B, 2B)
+        q_emb = F.normalize(q_emb, p=2, dim=1)
+        c_emb = F.normalize(c_emb, p=2, dim=1)
+
+        sim_scores = torch.matmul(q_emb, c_emb.transpose(0, 1))/self.temperature # (B, 2B)
 
         # Labels setup
         batch_size = q_emb.shape[0]
@@ -149,6 +166,7 @@ def main():
     )
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     
+    temperature = getattr(model_args, 'temperature', 0.05)
     # Custom DataCollator에서 raw columns을 사용하므로 False로 설정
     training_args.remove_unused_columns = False
 
@@ -169,7 +187,7 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path)
 
-    model = BiEncoder(model_args.model_name_or_path)
+    model = BiEncoder(model_args.model_name_or_path, temperature=temperature)
 
     # Prepare Dataset
     def prepare_features(example):
