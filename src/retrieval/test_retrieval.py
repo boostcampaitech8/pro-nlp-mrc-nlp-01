@@ -13,6 +13,9 @@ from datasets import Dataset, concatenate_datasets, load_from_disk
 from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm.auto import tqdm
 
+# 평가 추가) - 25.12.04
+from .metrics import compute_multi_k_metrics, build_experiment_config, log_experiment_console
+
 
 seed = 2024
 random.seed(seed)
@@ -113,7 +116,7 @@ class SparseRetrieval:
             for idx in range(topk):
                 print(f"Top-{idx+1} passage with score {doc_scores[idx]:4f}")
                 passage = self.contexts[doc_indices[idx]]
-                print(passage)
+                # print(passage)
                 top_passages.append(passage)
             return (doc_scores, top_passages)
 
@@ -125,6 +128,7 @@ class SparseRetrieval:
                     query_or_dataset["question"], k=topk
                 )
 
+            
             for idx, example in enumerate(
                 tqdm(query_or_dataset, desc="Sparse retrieval: ")
             ):
@@ -202,7 +206,7 @@ class SparseRetrieval:
             for idx in range(topk):
                 print("Top-%d passage with score %.4f" % (idx + 1, doc_scores[idx]))
                 passage = self.contexts[doc_indices[idx]]
-                print(passage)
+                # print(passage)
                 top_passages.append(passage)
             return (doc_scores, top_passages)
 
@@ -306,6 +310,9 @@ if __name__ == "__main__":
         context_path=args.context_path,
     )
 
+    # 추가) 25.12.04
+    retriever.get_sparse_embedding()
+    
     query = "대통령을 포함한 미국의 행정부 견제권을 갖는 국가 기관은?"
 
     if args.use_faiss:
@@ -330,3 +337,37 @@ if __name__ == "__main__":
 
         with timer("single query by exhaustive search"):
             scores, indices = retriever.retrieve(query)
+
+
+    # 추가) 25.12.04
+    # 1) doc_indices 불러오기
+    # retrieve()는 DataFrame만 반환 → doc_indices 다시 계산해야 함
+    doc_scores, doc_indices = retriever.get_relevant_doc_bulk(
+        full_ds["question"], k=100
+    )
+
+    # 2) ground truth ids 생성
+    ground_truth_ids = []
+    for example in full_ds:
+        try:
+            gt = retriever.contexts.index(example["context"])
+        except:
+            gt = -1
+        ground_truth_ids.append(gt)
+
+    # 3) multi-k metric 계산
+    k_list = [20, 50, 100]
+    hit_dict, mrr_dict = compute_multi_k_metrics(
+        doc_indices, ground_truth_ids, k_list
+    )
+
+    # 4) 실험 config 자동 생성
+    config = build_experiment_config(
+        retriever=retriever,
+        topk=100,
+        use_faiss=args.use_faiss,
+        k_list=k_list,
+    )
+
+    # 5) 콘솔 출력
+    log_experiment_console(config, hit_dict, mrr_dict)

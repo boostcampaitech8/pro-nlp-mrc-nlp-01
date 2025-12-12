@@ -22,6 +22,12 @@ class ModelArguments:
             "help": "Pretrained tokenizer name or path if not the same as model_name"
         },
     )
+    retriever_name_or_path: Optional[str] = field(
+        default="outputs/dpr_test",
+        metadata={
+            "help": "Path to pretrained retriever model or model identifier from huggingface.co/models"
+        },
+    )
 
 @dataclass
 class DataTrainingArguments:
@@ -74,11 +80,82 @@ class DataTrainingArguments:
         default=64, metadata={"help": "Define how many clusters to use for faiss."}
     )
     top_k_retrieval: int = field(
-        default=10,
+        default=100,
         metadata={
             "help": "Define how many top-k passages to retrieve based on similarity."
         },
     )
     use_faiss: bool = field(
         default=False, metadata={"help": "Whether to build with faiss"}
+    )
+    use_wandb: bool = field(
+        default=False, metadata={"help": "Whether to use Weights & Biases for logging"}
+    )
+    wandb_project: str = field(
+        default="retrieval", metadata={"help": "WandB project name"}
+    )
+    wandb_run_name: str = field(
+        default="run", metadata={"help": "WandB run name"}
+    )
+    context_file: str = field(
+        default="wikipedia_documents.json", metadata={"help": "Path to context file"}
+    )
+
+    bge_use_reranker: bool = field(
+        default=False, metadata={"help": "Use BGE reranker after retrieval"}
+    )
+    bge_rerank_top_k: int = field(
+        default=30, metadata={"help": "Number of top passages to keep after reranking"}
+    )
+    bge_batch_size: int = field(
+        default=8, metadata={"help": "Batch size for reranking"}
+    )
+    dense_embedding_path: Optional[str] = field(
+    default=None,
+    metadata={"help": "Path to dense embedding numpy file (optional override)"}
+    )
+
+    bge_use_dense: bool = field(
+        default=True, metadata={"help": "Use dense retrieval"}
+    )
+    bge_use_sparse: bool = field(
+        default=True, metadata={"help": "Use sparse retrieval"}
+    )
+    bge_use_colbert: bool = field(
+        default=False, metadata={"help": "Use colbert retrieval"}
+    )
+    bge_dense_weight: float = field(
+        default=0.5, metadata={"help": "Weight for dense score"}
+    )
+    bge_sparse_weight: float = field(
+        default=0.5, metadata={"help": "Weight for sparse score"}
+    )
+    bge_colbert_weight: float = field(
+        default=0.0, metadata={"help": "Weight for colbert score"}
+    )
+    bge_max_length: int = field(
+        default=512, metadata={"help": "Max length for BGE"}
+    )
+
+    sparse_embedding_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to sparse embedding pickle file (optional override)"}
+    )
+
+    dense_embedding_path: Optional[str] = field(
+        default=None, metadata={"help": "Path to save/load dense embeddings"}
+    )
+    temperature: float = field(
+        default=0.05, 
+        metadata={"help": "Temperature for scaling similarity scores"}
+    )
+
+    # Retrieval Caching (검색 결과 캐싱)
+    save_retrieval_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to save retrieval results for caching (e.g., data/cache/retrieval_k5.json)"}
+    )
+    load_retrieval_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to load cached retrieval results (skip retrieval if provided)"}
     )
