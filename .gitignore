@@ -1,0 +1,83 @@
+# Data folders
+data/
+data_negative/
+data_hybrid/
+data.tar.gz
+code.tar.gz
+
+# Code folder
+code/
+basecode/
+baseline/
+
+# Source code (keep src/ but ignore cache and outputs)
+src/__pycache__/
+src/**/__pycache__/
+src/wandb/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Model files
+models/
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.pb
+*.onnx
+
+# Outputs and results
+outputs/
+checkpoints/
+experiments/
+logs/
+*.log
+
+# Cache
+cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Jupyter Notebook
+notebooks/.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+*.egg-info/
+dist/
+build/
+*.so
+
+# Wandb (optional - uncomment if you don't want to track wandb logs)
+wandb/
+src/wandb/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# AI tools configuration
+.agent/
+.cursor/
+
+# Binary embedding files
+*.bin
+

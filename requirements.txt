@@ -1,0 +1,14 @@
+torch
+transformers
+accelerate
+pandas
+numpy
+datasets
+faiss-gpu
+sentence-transformers
+rank_bm25
+kiwipiepy
+evaluate
+scikit-learn
+wandb
+tqdm
