@@ -486,113 +486,64 @@ class RobertaCNNForQuestionAnswering(RobertaPreTrainedModel):
             return_dict=return_dict,
         )
 
-        sequence_output = outputs[0] # (Batch, Seq_Len, Hidden)
+        sequence_output = outputs[0] 
 
-        # # CNN 입력 전 NaN 체크 (RoBERTa 자체 발산 방지)
-        # sequence_output = torch.nan_to_num(sequence_output, nan=0.0).float()
-
-        # if attention_mask is not None:
-        #      expanded_mask = attention_mask.unsqueeze(-1).float()
-        #      sequence_output = sequence_output * expanded_mask
-
-        # i = 0
-        # for cnn_layer, layer_norm in zip(self.cnn_layers, self.layer_norms):
-        #     residual = sequence_output
-            
-        #     # [수정 2] Transpose 후 contiguous() 필수!
-        #     # 메모리 비연속성으로 인한 연산 오류 방지
-        #     cnn_input = sequence_output.transpose(1, 2).contiguous()
-
-        #     # [DEBUG] CNN 입력 확인
-        #     if torch.isnan(cnn_input).any():
-        #         print(f"🚨 [비상] CNN Layer {i} 입력 전 NaN 발견!")
-            
-        #     cnn_output = cnn_layer(cnn_input)
-            
-        #     # 다시 돌려놓기 + contiguous
-        #     cnn_output = cnn_output.transpose(1, 2).contiguous()
-            
-        #     if attention_mask is not None:
-        #         cnn_output = cnn_output * expanded_mask
-            
-        #     sequence_output = layer_norm(residual + cnn_output)
-
-        #     i+=1
 
         with torch.amp.autocast('cuda', enabled=False):
             
-            # 들어오자마자 FP32(float)로 옷을 갈아입힙니다.
             sequence_output = sequence_output.float()
             
-            # 혹시 모를 NaN 제거
             sequence_output = torch.nan_to_num(sequence_output, nan=0.0, posinf=0.0, neginf=0.0)
 
-            # 마스크 처리 (FP32 상태에서 안전하게)
             if attention_mask is not None:
                 extended_mask = attention_mask.unsqueeze(-1).float()
                 sequence_output = sequence_output * extended_mask
             
             i = 0
-            # CNN 레이어 루프
             for cnn_layer, layer_norm in zip(self.cnn_layers, self.layer_norms):
                 residual = sequence_output
 
-                # # [디버깅] 가중치 자체가 NaN인지 확인 (이게 뜨면 이전 스텝 역전파에서 망가진 것)
                 for name, param in cnn_layer.named_parameters():
-                    # if torch.isnan(param).any() or torch.isinf(param).any():
                     if torch.isnan(param).any():
-                        print(f"💀 [사망 신고] CNN Layer {i}의 가중치({name})가 이미 NaN입니다!")
+                        print(f"💀 CNN Layer {i}의 가중치({name})가 이미 NaN입니다!")
                 
-                # Transpose + Contiguous
                 cnn_input = sequence_output.transpose(1, 2).contiguous()
 
-                # [DEBUG] CNN 입력 확인
                 if torch.isnan(cnn_input).any():
                     print(f"🚨 [비상] CNN Layer {i} 입력 전 NaN 발견!")
                 
-                # CNN 연산 (이제 FP32라서 안 터짐!)
                 cnn_output = cnn_layer(cnn_input)
                 
                 cnn_output = cnn_output.transpose(1, 2).contiguous()
 
-                # [방어 1] CNN 출력값 소독 (여기서 무한대가 자주 나옵니다)
                 cnn_output = torch.nan_to_num(cnn_output, nan=0.0, posinf=0.0, neginf=0.0)
                 
-                # [방어 2] 값 자르기 (Clamp) - Residual 더하기 전에 너무 큰 값 방지
                 cnn_output = torch.clamp(cnn_output, min=-10.0, max=10.0)
                 
                 if attention_mask is not None:
                     cnn_output = cnn_output * extended_mask
                 
-                # Residual 더하기
                 added_output = residual + cnn_output
                 
-                # LayerNorm 실행
                 sequence_output = layer_norm(added_output)
 
-                # [방어 3] LayerNorm 결과 소독 (분산 계산 중 NaN 발생 가능성 차단)
                 sequence_output = torch.nan_to_num(sequence_output, nan=0.0, posinf=0.0, neginf=0.0)
 
-                # [DEBUG] 생존 확인
                 if torch.isnan(sequence_output).any():
                      print(f"🚨 [비상] CNN Layer {i} 통과 후 여전히 NaN 존재!")
 
                 i += 1
             
-            # 너무 큰 값 자르기 (Clamp)
             sequence_output = torch.clamp(sequence_output, min=-15, max=15)
             
-            # 출력층 (FP32 상태에서 계산)
             logits = self.qa_outputs(sequence_output)
 
         
-            # NaN이 있으면 0으로 치환하고, 너무 큰 값은 자릅니다.
             sequence_output = torch.nan_to_num(sequence_output, nan=0.0)
             sequence_output = torch.clamp(sequence_output, min=-20, max=20)
             
             logits = self.qa_outputs(sequence_output)
         
-            # print(f"DEBUG: Final Logits - Max: {logits.max().item():.4f}, Min: {logits.min().item():.4f}")
         
             start_logits, end_logits = logits.split(1, dim=-1)
             start_logits = start_logits.squeeze(-1)
@@ -613,9 +564,7 @@ class RobertaCNNForQuestionAnswering(RobertaPreTrainedModel):
                 start_loss = loss_fct(start_logits, start_positions)
                 end_loss = loss_fct(end_logits, end_positions)
                 total_loss = (start_loss + end_loss) / 2
-            
-            # Loss가 NaN이면 0이 아니라 에러를 띄우거나 처리가 필요하지만,
-            # 보통 초기화만 잘 되면 해결됩니다.
+
 
         if not return_dict:
             output = (start_logits, end_logits) + outputs[2:]
