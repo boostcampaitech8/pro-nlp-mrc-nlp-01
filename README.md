@@ -1,5 +1,5 @@
 # 🔍 Open-Domain Question Answering (ODQA)
-> **1차 도메인 프로젝트 Wrap-Up Report 기반 프로젝트 문서화**
+> **1차 도메인 프로젝트 Wrap-Up Report 기반 프로젝트 문서화**  
 > **프로젝트 기간: 2025.11.24 ~ 2025.12.15**
 
 ---
